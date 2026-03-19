@@ -1,25 +1,25 @@
 # Roblox Script Collection
 
-Repo ini berisi berbagai **script utility** untuk Roblox yang saya kumpulkan, modifikasi, atau buat sendiri. Semua script ditujukan untuk **tujuan edukasi, eksperimen Lua scripting**, dan hiburan pribadi.
+This repository contains a collection of Roblox scripts and utilities that I have created, modified, or gathered for educational and personal experimentation purposes. These scripts are primarily intended for learning Lua scripting, understanding Roblox's remote events, UI design, networking, and game mechanics.
 
-**Kategori script yang ada di repo ini (akan terus bertambah):**
-- Game-specific cheats/utilities (contoh: auto answer, sadap jawaban, dll)
-- UI enhancements & floating panels
-- Teleport / server tools (rejoin, server hop, dll)
-- Exploit helpers (remote event intercept, etc.)
-- General utilities (ESP, speed hack, dll – tergantung game)
+**Main categories of scripts in this repository (will continue to grow):**
+- Game-specific utilities
+- UI enhancements (draggable floating panels, modern designs)
+- Server & teleport tools (rejoin, true server hop via API)
+- General helpers (remote event interception, etc.)
 
-## ⚠️ DISCLAIMER PENTING – BACA SEBELUM PAKAI ⚠️
+## ⚠️ IMPORTANT DISCLAIMER – READ BEFORE USING ⚠️
 
-**Penggunaan script apa pun di repo ini sepenuhnya atas risiko dan tanggung jawab Anda sendiri.**
+**Use of any script in this repository is entirely at your own risk.**
 
-- Hampir semua script di sini **melanggar Terms of Service Roblox** (exploiting, cheating, automation, dll).
-- Penggunaan dapat menyebabkan **akun Roblox Anda di-BAN permanen** (warning, temporary ban, permanent ban, hardware ban, IP ban, dll).
-- Pembuat repo / contributor **tidak bertanggung jawab** atas segala bentuk kerugian, termasuk:
-  - Kehilangan akun utama / item / Robux / gamepass
-  - Ban permanen atau hardware ban
-  - Masalah hukum atau konsekuensi lainnya
-- **Gunakan hanya di akun alternatif / smurf account** jika Anda tetap ingin mencoba.
-- **Use at your own risk** – No warranty, no guarantee, no support for ban appeals or recovery.
+- Most scripts provided here **violate Roblox's Terms of Service** (exploits, cheating, automation, etc.).
+- Using these scripts may result in **permanent account bans** (including warnings, temporary bans, permanent bans, hardware bans, or IP bans).
+- The repository owner and contributors **are not responsible** for any consequences, including but not limited to:
+  - Loss of your Roblox account
+  - Loss of Robux, items, game passes, or progress
+  - Permanent bans or hardware/IP restrictions
+  - Any legal or other issues arising from usage
+- It is strongly recommended to **only use these scripts on alternate/smurf accounts**, never on your main account.
+- **Use at your own risk** — no warranties, no guarantees, and no support for ban appeals or account recovery.
 
-**Saya tidak menganjurkan cheating di game manapun. Repo ini hanya untuk belajar Lua di Roblox, memahami cara kerja remote events, UI design, dan networking di engine Roblox.**
+**This repository exists solely for educational purposes** — to study Lua scripting in Roblox, remote event behavior, UI creation, and related concepts. I do not encourage cheating or exploiting in any game.
