@@ -1,0 +1,2966 @@
+-- ================================================
+-- AzothAja - HOME GARDEN
+-- Auto Sell (Teleport & Return) | Ultra Compact UI
+-- Smart Multi-Select Auto Buy - SEED, GEAR & BLOCK (Fixed Remote)
+-- Shops: Seed, Gear, Block (with Auto-Buy), Props, Market, Auction
+-- Mailbox | Drop Equipped | Wild Pet Detector | Seed/Gear Stock + 5-Min Restock Timers | Teleport | Anti-AFK | Anti Duplicate
+-- ================================================
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local SoundService = game:GetService("SoundService")
+local VirtualUser = game:GetService("VirtualUser")
+local player = Players.LocalPlayer
+local UIS = game:GetService("UserInputService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local TweenService = game:GetService("TweenService")
+
+-- ================================================
+-- GET GUI PARENT + ANTI DUPLICATE
+-- ================================================
+
+local function getGUIParent()
+    local success, result = pcall(function() return gethui() end)
+    if success and result then return result end
+    if CoreGui then return CoreGui end
+    return player:WaitForChild("PlayerGui")
+end
+
+local guiParent = getGUIParent()
+
+local function destroyExistingGUI()
+    local oldGui = guiParent:FindFirstChild("AzothAja")
+    if oldGui then oldGui:Destroy() end
+    print("[AzothAja] Anti Duplicate: Removed old GUI")
+end
+destroyExistingGUI()
+
+-- ================================================
+-- GET PLAYER ZONE
+-- ================================================
+
+local Remotes = RS:FindFirstChild("Remotes")
+local GetPlayerZone = Remotes and Remotes:FindFirstChild("GetPlayerZone")
+local PlayerZoneAssigned = Remotes and Remotes:FindFirstChild("PlayerZoneAssigned")
+
+local playerZone = "?"
+if GetPlayerZone then pcall(function() playerZone = GetPlayerZone:InvokeServer() or "?" end) end
+if PlayerZoneAssigned then PlayerZoneAssigned.OnClientEvent:Connect(function(zone) playerZone = zone end) end
+
+-- ================================================
+-- LOAD REMOTES & CONFIGS
+-- ================================================
+
+local GetSeedShop = Remotes and Remotes:FindFirstChild("GetSeedShop")
+local BoothSellAll = Remotes and Remotes:FindFirstChild("BoothSellAll")
+local BuySeedSlot = Remotes and Remotes:FindFirstChild("BuySeedSlot") 
+local BuySeed = Remotes and Remotes:FindFirstChild("BuySeed")
+
+local GearShopStock = Remotes and Remotes:FindFirstChild("GearShopStock")
+local BuyGearFromShop = Remotes and Remotes:FindFirstChild("BuyGearFromShop")
+local OpenGearShop = Remotes and Remotes:FindFirstChild("OpenGearShop")
+
+local GetCrateShopData = Remotes and Remotes:FindFirstChild("GetCrateShopData")
+local GetBuildShopData = Remotes and Remotes:FindFirstChild("GetBuildShopData") -- FIXED: Remote Block Shop yang benar
+local OpenBuildShop = Remotes and Remotes:FindFirstChild("OpenBuildShop")
+
+local GetPropShopData = Remotes and Remotes:FindFirstChild("GetPropShopData")
+local OpenPropShop = Remotes and Remotes:FindFirstChild("OpenPropShop")
+
+local BoothGetMarket = Remotes and Remotes:FindFirstChild("BoothGetMarket")
+local BoothMarketUpdate = Remotes and Remotes:FindFirstChild("BoothMarketUpdate")
+
+local GetAuctionState = Remotes and Remotes:FindFirstChild("GetAuctionState")
+local AuctionStateUpdate = Remotes and Remotes:FindFirstChild("AuctionStateUpdate")
+local AuctionBuy = Remotes and Remotes:FindFirstChild("AuctionBuy")
+
+local BuyCrate = Remotes and Remotes:FindFirstChild("BuyCrate")
+local TeleportRequest = Remotes and Remotes:FindFirstChild("TeleportRequest")
+
+-- DROP ITEM
+local RequestDropEquipped = Remotes and Remotes:FindFirstChild("RequestDropEquipped")
+local DropRequestResult = Remotes and Remotes:FindFirstChild("DropRequestResult")
+local HotbarSelectionChanged = RS:FindFirstChild("HotbarSelectionChanged")
+
+
+local CurrencySymbol = "$"
+pcall(function()
+    local BoothSellConfig = require(RS:WaitForChild("BoothSellConfig"))
+    if BoothSellConfig and BoothSellConfig.CurrencySymbol then CurrencySymbol = BoothSellConfig.CurrencySymbol end
+end)
+
+local SellSuccessSFX = SoundService:FindFirstChild("AzothAjaSellSFX")
+if not SellSuccessSFX then
+    SellSuccessSFX = Instance.new("Sound")
+    SellSuccessSFX.Name = "AzothAjaSellSFX"
+    SellSuccessSFX.SoundId = "rbxassetid://125133892436445"
+    SellSuccessSFX.Volume = 0.75
+    SellSuccessSFX.Looped = false
+    SellSuccessSFX.Parent = SoundService
+end
+
+local function formatNumber(n)
+    local formatted = tostring(n)
+    while true do
+        local k
+        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if k == 0 then break end
+    end
+    return formatted
+end
+
+local function formatCountdown(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    local m = math.floor(seconds / 60)
+    local sec = seconds % 60
+    return string.format("%02d:%02d", m, sec)
+end
+
+local function getMultColor(mult)
+    local v1 = mult or 1
+    if v1 >= 2.0 then return Color3.fromRGB(255, 215, 64) end
+    if v1 >= 1.2 then return Color3.fromRGB(120, 235, 120) end
+    if v1 <= 0.95 then return Color3.fromRGB(255, 120, 120) end
+    return Color3.fromRGB(255, 255, 255)
+end
+
+local function createModernStroke(parent, color)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color
+    stroke.Thickness = 1.2
+    stroke.Parent = parent
+    return stroke
+end
+
+print("[AzothAja] Remotes & Config loaded!")
+
+-- ================================================
+-- ANTI-AFK LOGIC
+-- ================================================
+
+local antiAfkEnabled = false
+local antiAfkConnection = nil
+
+local function toggleAntiAfk(state)
+    antiAfkEnabled = state
+    if antiAfkEnabled then
+        if not antiAfkConnection then
+            antiAfkConnection = player.Idled:Connect(function()
+                pcall(function()
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new(0,0))
+                end)
+            end)
+        end
+        print("[AzothAja] Anti-AFK: Enabled")
+    else
+        if antiAfkConnection then
+            antiAfkConnection:Disconnect()
+            antiAfkConnection = nil
+        end
+        print("[AzothAja] Anti-AFK: Disabled")
+    end
+end
+
+-- ================================================
+-- DATA: MARKET & AUCTION
+-- ================================================
+
+local marketData = {}
+local nextRefreshTime = 0
+
+local function fetchMarketData()
+    if BoothGetMarket then
+        local s, r = pcall(function() return BoothGetMarket:InvokeServer() end)
+        if s and type(r) == "table" then
+            if r.market then marketData = r.market end
+            if r.nextRefresh then nextRefreshTime = r.nextRefresh end
+        end
+    end
+end
+task.spawn(fetchMarketData)
+
+if BoothMarketUpdate then
+    BoothMarketUpdate.OnClientEvent:Connect(function(data)
+        if type(data) == "table" then
+            if data.market then marketData = data.market end
+            if data.nextRefresh then nextRefreshTime = data.nextRefresh end
+        end
+    end)
+end
+
+local auctionItems = {}
+local auctionRefreshEndsAt = 0
+local auctionServerTimeOffset = 0
+
+local function fetchAuction()
+    if GetAuctionState then
+        local s, r = pcall(function() return GetAuctionState:InvokeServer() end)
+        if s and type(r) == "table" then
+            if r.Items then auctionItems = r.Items end
+            if r.RefreshEndsAt and r.Now then
+                auctionRefreshEndsAt = r.RefreshEndsAt
+                auctionServerTimeOffset = r.Now - os.time()
+            end
+        end
+    end
+end
+task.spawn(fetchAuction)
+
+if AuctionStateUpdate then
+    AuctionStateUpdate.OnClientEvent:Connect(function() fetchAuction() end)
+end
+
+-- ================================================
+-- AUTO BUY LOGIC: SEEDS (SMART / NO SPAM)
+-- ================================================
+
+local seedData = {}
+local selectedSeedKeys = { CARROT = true }
+local autoBuySeedEnabled = false
+local buyAmountPerCycle = 5
+local SEED_RESTOCK_INTERVAL = 300 -- 5 menit
+local seedNextRefreshAt = 0
+
+local function loadSeedShop()
+    if GetSeedShop then
+        local success, data = pcall(function() return GetSeedShop:InvokeServer() end)
+        if success and data and data.slots then
+            seedData = {}
+            for i, slot in pairs(data.slots) do
+                seedData[slot.key] = {
+                    name = slot.name, price = slot.price, stock = slot.stock, max = slot.max, key = slot.key, slotIndex = i
+                }
+            end
+
+            -- Gunakan timestamp server jika response menyediakannya.
+            local serverRefresh = data.nextRefresh or data.NextRefresh or data.RefreshEndsAt or data.nextRestock or data.NextRestock
+            if type(serverRefresh) == "number" and serverRefresh > os.time() then
+                seedNextRefreshAt = serverRefresh
+            elseif seedNextRefreshAt <= os.time() then
+                seedNextRefreshAt = os.time() + SEED_RESTOCK_INTERVAL
+            end
+
+            return data.slots
+        end
+    end
+    return {}
+end
+loadSeedShop()
+
+local function buySeed(seedKey, amount)
+    amount = amount or 1
+    if not seedKey or not seedData[seedKey] or seedData[seedKey].stock <= 0 then return false end
+    local seed = seedData[seedKey]
+    
+    local success = false
+    if BuySeedSlot then
+        local s, r = pcall(function()
+            for i = 1, amount do
+                if seed.stock > 0 then BuySeedSlot:FireServer(seed.slotIndex); task.wait(0.1) end
+            end
+        end)
+        if s then success = true end
+    end
+    
+    if not success and BuySeed then
+        local s, r = pcall(function() return BuySeed:InvokeServer(seedKey, amount) end)
+        if s then success = true end
+    end
+    
+    if success then task.spawn(function() task.wait(0.2); loadSeedShop() end); return true end
+    return false
+end
+
+local autoBuySeedLoopRunning = false
+local function autoBuySeedLoop()
+    if autoBuySeedLoopRunning then return end
+    autoBuySeedLoopRunning = true
+    while autoBuySeedEnabled do
+        local anyAvailable = false
+        for key, isSelected in pairs(selectedSeedKeys) do
+            if isSelected and autoBuySeedEnabled then
+                loadSeedShop()
+                local seed = seedData[key]
+                if seed and seed.stock > 0 then
+                    anyAvailable = true
+                    buySeed(key, math.min(buyAmountPerCycle, seed.stock))
+                    task.wait(0.2)
+                end
+            end
+        end
+        if not anyAvailable then
+            task.wait(3)
+        else
+            task.wait(1.5)
+        end
+    end
+    autoBuySeedLoopRunning = false
+end
+
+local function getSelectedSeedText()
+    local names = {}
+    for k, v in pairs(selectedSeedKeys) do
+        if v then table.insert(names, seedData[k] and seedData[k].name or k) end
+    end
+    if #names == 0 then return "🌱 Seed: None" end
+    if #names <= 1 then return "🌱 Seed: " .. table.concat(names, ", ") end
+    return "🌱 Seed: " .. names[1] .. " (+" .. (#names-1) .. ")"
+end
+
+-- ================================================
+-- AUTO BUY LOGIC: GEARS (SMART / NO SPAM)
+-- ================================================
+
+local gearData = {}
+local selectedGearKeys = { WATER_JUG = true }
+local autoBuyGearEnabled = false
+
+local liveGearPrices = {
+    PLANT_POT = 12500, TORCH = 800, ULTRA_SPRAYER = 250000, GOLDEN_JUG = 100000,
+    WARP_STONE = 7500, SPEED_BERRY = 1000, SMALL_SPRAYER = 700, GIANT_BERRY = 5750,
+    MAGNET_GUN = 7500000, GHOST_BERRY = 6750, SCARECROW = 20000, JUMP_BERRY = 1100,
+    TINY_BERRY = 5250, WATER_JUG = 500, MAX_SPRAYER = 10000000, SMOKE_BOMB = 4750,
+    CART = 10000, BIG_SPRAYER = 6500, WOOD_SIGN = 900, MEGA_SPRAYER = 60000
+}
+local liveGearStock = {}
+local GEAR_RESTOCK_INTERVAL = 300 -- 5 menit sesuai permintaan UI AzothAja
+local gearNextRestockAt = 0
+
+if GearShopStock then
+    -- GearShopStock adalah RemoteEvent pada client game saat ini.
+    GearShopStock.OnClientEvent:Connect(function(data)
+        if type(data) == "table" then
+            if data.prices then liveGearPrices = data.prices end
+            if data.stock then liveGearStock = data.stock end
+            if type(data.nextRestock) == "number" then
+                gearNextRestockAt = data.nextRestock
+            elseif type(data.NextRestock) == "number" then
+                gearNextRestockAt = data.NextRestock
+            end
+        end
+    end)
+end
+
+local function loadGearShop()
+    gearData = {}
+    for id, price in pairs(liveGearPrices) do
+        local stock = tonumber(liveGearStock[id]) or 0 
+        local formattedName = id:gsub("_", " "):lower():gsub("^%l", string.upper):gsub(" (%l)", string.upper)
+        gearData[id] = {
+            id = id,
+            name = formattedName,
+            price = price,
+            stock = stock
+        }
+    end
+    return gearData
+end
+loadGearShop()
+
+local function buyGear(gearId, amount)
+    amount = amount or 1
+    local current = gearData[gearId]
+    if not current or (tonumber(current.stock) or 0) <= 0 then return false end
+    if BuyGearFromShop then
+        local s, r = pcall(function() BuyGearFromShop:FireServer(gearId, amount) end)
+        return s
+    end
+    return false
+end
+
+local autoBuyGearLoopRunning = false
+local function autoBuyGearLoop()
+    if autoBuyGearLoopRunning then return end
+    autoBuyGearLoopRunning = true
+    while autoBuyGearEnabled do
+        local anyAvailable = false
+        local items = loadGearShop()
+        for key, isSelected in pairs(selectedGearKeys) do
+            if isSelected and autoBuyGearEnabled then
+                local gear = gearData[key]
+                if gear and (gear.stock == nil or gear.stock > 0) then
+                    anyAvailable = true
+                    buyGear(key, 1)
+                    task.wait(0.5) 
+                end
+            end
+        end
+        if not anyAvailable then
+            task.wait(3)
+        else
+            task.wait(2)
+        end
+    end
+    autoBuyGearLoopRunning = false
+end
+
+local function getSelectedGearText()
+    local names = {}
+    for k, v in pairs(selectedGearKeys) do
+        if v then table.insert(names, gearData[k] and gearData[k].name or k) end
+    end
+    if #names == 0 then return "🔧 Gear: None" end
+    if #names <= 1 then return "🔧 Gear: " .. table.concat(names, ", ") end
+    return "🔧 Gear: " .. names[1] .. " (+" .. (#names-1) .. ")"
+end
+
+-- ================================================
+-- AUTO BUY LOGIC: BLOCK / CRATE (SMART / NO SPAM)
+-- ================================================
+
+local blockData = {}
+local selectedBlockKeys = {}
+local autoBuyBlockEnabled = false
+
+local function loadBlockShopData()
+    local remote = GetBuildShopData or GetCrateShopData
+    if remote then
+        local success, data = pcall(function() return remote:InvokeServer() end)
+        if success and type(data) == "table" and data.crates then
+            blockData = {}
+            for _, slot in ipairs(data.crates) do
+                blockData[slot.id] = {
+                    id = slot.id, name = slot.name, price = slot.price, stock = slot.stock, max = slot.max
+                }
+            end
+            return data.crates
+        end
+    end
+    return {}
+end
+loadBlockShopData()
+
+local autoBuyBlockLoopRunning = false
+local function autoBuyBlockLoop()
+    if autoBuyBlockLoopRunning then return end
+    autoBuyBlockLoopRunning = true
+    while autoBuyBlockEnabled do
+        local anyAvailable = false
+        for key, isSelected in pairs(selectedBlockKeys) do
+            if isSelected and autoBuyBlockEnabled then
+                loadBlockShopData()
+                local block = blockData[key]
+                if block and block.stock > 0 and BuyCrate then
+                    anyAvailable = true
+                    pcall(function() BuyCrate:FireServer(block.id) end)
+                    task.wait(0.5)
+                end
+            end
+        end
+        if not anyAvailable then
+            task.wait(3)
+        else
+            task.wait(1.5)
+        end
+    end
+    autoBuyBlockLoopRunning = false
+end
+
+local function getSelectedBlockText()
+    local names = {}
+    for k, v in pairs(selectedBlockKeys) do
+        if v then table.insert(names, blockData[k] and blockData[k].name or k) end
+    end
+    if #names == 0 then return "🧱 Block: None" end
+    if #names <= 1 then return "🧱 Block: " .. table.concat(names, ", ") end
+    return "🧱 Block: " .. names[1] .. " (+" .. (#names-1) .. ")"
+end
+
+-- ================================================
+-- DROP ITEM: EQUIPPED HOTBAR ITEM
+-- ================================================
+-- Uses the same client-side flow as the game's DropItemClient:
+-- HotbarSelectionChanged -> RequestDropEquipped(itemName, token)
+-- The server decides whether the selected item is actually droppable.
+
+local dropSelectedItem = ""
+local dropRequestCounter = 0
+local dropBusy = false
+
+local function dropEligible(itemName)
+    if type(itemName) ~= "string" or itemName == "" then
+        return false
+    end
+
+    -- Match the game's DropItemClient eligibility rules.
+    if itemName:sub(1, 7) == "FLIGHT:"
+        or itemName:sub(1, 4) == "PET_"
+        or itemName:sub(1, 7) == "POTTED_"
+        or itemName:sub(1, 5) == "TOOL_" then
+        return false
+    end
+
+    if itemName == "CRATE_NEWBIE" then
+        return false
+    end
+
+    if itemName:sub(1, 5) == "GEAR_" then
+        local gearName = itemName:sub(6)
+        return gearName ~= "JETPACK"
+            and gearName ~= "FLYING_BOARD"
+            and gearName ~= "ULTRA_SPRAYER"
+            and gearName ~= "MAX_SPRAYER"
+    end
+
+    -- Crops/seeds and normal world-drop item categories are supported.
+    if itemName:sub(1, 5) == "CROP_"
+        or itemName:sub(1, 4) == "EGG_"
+        or itemName:sub(1, 6) == "CRATE_"
+        or itemName:sub(1, 5) == "PROP_" then
+        return true
+    end
+
+    local SeedConfig = RS:FindFirstChild("SeedConfig")
+    if SeedConfig then
+        local ok, config = pcall(require, SeedConfig)
+        if ok and config and config.Seeds and config.Seeds[itemName] ~= nil then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function setDropSelection(itemName)
+    if type(itemName) ~= "string" then
+        itemName = ""
+    end
+    dropSelectedItem = itemName
+end
+
+if HotbarSelectionChanged and HotbarSelectionChanged:IsA("BindableEvent") then
+    HotbarSelectionChanged.Event:Connect(function(itemName)
+        setDropSelection(itemName)
+    end)
+end
+
+local function requestDropEquipped()
+    if dropBusy then
+        return false, "busy"
+    end
+
+    if not RequestDropEquipped then
+        return false, "remote"
+    end
+
+    if not dropEligible(dropSelectedItem) then
+        return false, "not_eligible"
+    end
+
+    dropBusy = true
+    dropRequestCounter += 1
+
+    local token = tostring(dropRequestCounter) .. ":" .. tostring(os.clock())
+    local itemName = dropSelectedItem
+
+    local ok = pcall(function()
+        RequestDropEquipped:FireServer(itemName, token)
+    end)
+
+    if not ok then
+        dropBusy = false
+        return false, "failed"
+    end
+
+    return true, itemName
+end
+
+if DropRequestResult and DropRequestResult:IsA("RemoteEvent") then
+    DropRequestResult.OnClientEvent:Connect(function(ok, result, _, message)
+        dropBusy = false
+
+        if ok and result == "DROPPED" then
+            -- The real client clears its selected item after a successful drop.
+            dropSelectedItem = ""
+        elseif ok and result == "PICKED_UP" then
+            -- Pickups do not originate from this button; keep the selection.
+        end
+
+        if message then
+            print("[AzothAja Drop] " .. tostring(message))
+        end
+    end)
+end
+
+-- ================================================
+-- MAILBOX: OPEN NATIVE GAME UI
+-- ================================================
+-- The game already has MailClient + MailboxPromptUI.
+-- MailClient listens to ProximityPromptService.PromptTriggered
+-- for a prompt named "MailboxPrompt" and then opens the real
+-- MailGui/MailboxPanel. We therefore trigger that prompt instead
+-- of creating a second fake mailbox UI.
+
+local function getPromptWorldPosition(prompt)
+    local parent = prompt and prompt.Parent
+    if not parent then return nil end
+
+    if parent:IsA("Attachment") then
+        return parent.WorldPosition
+    elseif parent:IsA("BasePart") then
+        return parent.Position
+    elseif prompt:IsA("ProximityPrompt") and prompt.Adornee then
+        local adornee = prompt.Adornee
+        if adornee:IsA("Attachment") then
+            return adornee.WorldPosition
+        elseif adornee:IsA("BasePart") then
+            return adornee.Position
+        end
+    end
+
+    return nil
+end
+
+local function findMailboxPrompt()
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local rootPos = root and root.Position
+
+    local nearest = nil
+    local nearestDistance = math.huge
+    local fallback = nil
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") and obj.Name == "MailboxPrompt" then
+            fallback = fallback or obj
+
+            local pos = getPromptWorldPosition(obj)
+            if pos and rootPos then
+                local distance = (pos - rootPos).Magnitude
+                if distance < nearestDistance then
+                    nearestDistance = distance
+                    nearest = obj
+                end
+            end
+        end
+    end
+
+    return nearest or fallback
+end
+
+local function openNativeMailbox()
+    -- If the real MailGui is already open, don't create another UI.
+    local playerGui = player:FindFirstChild("PlayerGui")
+    local mailGui = playerGui and playerGui:FindFirstChild("MailGui")
+    local mailboxPanel = mailGui and mailGui:FindFirstChild("MailboxPanel")
+    local sendPanel = mailGui and mailGui:FindFirstChild("SendPanel")
+
+    if mailboxPanel and mailboxPanel.Visible then
+        return true
+    end
+
+    if sendPanel and sendPanel.Visible then
+        return true
+    end
+
+    local prompt = findMailboxPrompt()
+    if not prompt then
+        warn("[AzothAja] MailboxPrompt tidak ditemukan.")
+        return false
+    end
+
+    -- Preferred: executor's ProximityPrompt trigger.
+    if typeof(fireproximityprompt) == "function" then
+        local ok = pcall(function()
+            fireproximityprompt(prompt)
+        end)
+
+        if ok then
+            return true
+        end
+    end
+
+    -- Fallback: fire the same client signal MailClient listens to.
+    -- This mirrors the game's own PromptTriggered connection.
+    if typeof(firesignal) == "function" then
+        local ok = pcall(function()
+            firesignal(ProximityPromptService.PromptTriggered, prompt, player)
+        end)
+
+        if ok then
+            return true
+        end
+    end
+
+    -- Last fallback: native Roblox prompt input simulation.
+    local holdDuration = math.max(prompt.HoldDuration or 0, 0.05)
+    local began = pcall(function()
+        prompt:InputHoldBegin()
+    end)
+
+    if began then
+        task.delay(holdDuration + 0.05, function()
+            pcall(function()
+                prompt:InputHoldEnd()
+            end)
+        end)
+        return true
+    end
+
+    warn("[AzothAja] Gagal membuka MailboxPrompt.")
+    return false
+end
+
+-- ================================================
+-- MAIL REMOTES REFERENCE
+-- ================================================
+-- Current game MailClient uses these remotes:
+-- MailSend, MailGetInbox, MailClaim, MailBadge,
+-- MailGetFriends, MailFindUser, GetTradableInventory.
+-- The native MailClient handles the response format and UI.
+
+local MailSend = Remotes and Remotes:FindFirstChild("MailSend")
+local MailGetInbox = Remotes and Remotes:FindFirstChild("MailGetInbox")
+local MailClaim = Remotes and Remotes:FindFirstChild("MailClaim")
+local MailBadge = Remotes and Remotes:FindFirstChild("MailBadge")
+local MailGetFriends = Remotes and Remotes:FindFirstChild("MailGetFriends")
+local MailFindUser = Remotes and Remotes:FindFirstChild("MailFindUser")
+local GetTradableInventory = Remotes and Remotes:FindFirstChild("GetTradableInventory")
+
+-- ================================================
+-- UI: MARKET & AUCTION (COMPACT)
+-- ================================================
+
+local function createMarketUI()
+    local oldUI = player.PlayerGui:FindFirstChild("MarketUI")
+    if oldUI then oldUI:Destroy() end
+    fetchMarketData() 
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "MarketUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    local Main = Instance.new("Frame")
+    Main.Size = UDim2.new(0, 220, 0, 240)
+    Main.Position = UDim2.new(0.5, 120, 0.5, -120)
+    Main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Main.BackgroundTransparency = 0.1
+    Main.BorderSizePixel = 0
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = screenGui
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+    createModernStroke(Main, Color3.fromRGB(60, 180, 255))
+    
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 26)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    TitleBar.BackgroundTransparency = 0.5
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Main
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0.7, 0, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Text = "📈 Market Prices"
+    Title.TextColor3 = Color3.fromRGB(60, 180, 255)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 20, 0, 20)
+    MinBtn.Position = UDim2.new(1, -46, 0.5, -10)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    MinBtn.TextSize = 12
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+    
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+    CloseBtn.Position = UDim2.new(1, -23, 0.5, -10)
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseBtn.TextSize = 10
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = TitleBar
+    Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
+    CloseBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+    
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size = UDim2.new(1, -10, 1, -32)
+    Scroll.Position = UDim2.new(0, 5, 0, 28)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.Parent = Main
+    
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            MinBtn.Text = "□"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 220, 0, 26) }):Play()
+            Scroll.Visible = false
+        else
+            MinBtn.Text = "−"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 220, 0, 240) }):Play()
+            task.wait(0.2)
+            Scroll.Visible = true
+        end
+    end)
+    
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 2)
+    Layout.SortOrder = Enum.SortOrder.Name
+    Layout.Parent = Scroll
+    
+    local uiRows = {}
+    local function populateMarket()
+        for _, child in pairs(Scroll:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+        uiRows = {}
+        for itemName, mult in pairs(marketData) do
+            local row = Instance.new("Frame")
+            row.Name = itemName
+            row.Size = UDim2.new(1, 0, 0, 22)
+            row.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            row.BackgroundTransparency = 0.5
+            row.Parent = Scroll
+            Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+            
+            local nameLbl = Instance.new("TextLabel")
+            nameLbl.Size = UDim2.new(0.6, 0, 1, 0)
+            nameLbl.Position = UDim2.new(0.04, 0, 0, 0)
+            nameLbl.BackgroundTransparency = 1
+            nameLbl.Text = itemName:sub(1,1):upper() .. itemName:sub(2):lower()
+            nameLbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+            nameLbl.Font = Enum.Font.GothamMedium
+            nameLbl.TextSize = 9
+            nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+            nameLbl.Parent = row
+            
+            local multLbl = Instance.new("TextLabel")
+            multLbl.Size = UDim2.new(0.3, 0, 1, 0)
+            multLbl.Position = UDim2.new(0.66, 0, 0, 0)
+            multLbl.BackgroundTransparency = 1
+            multLbl.Text = string.format("x%.2f", mult)
+            multLbl.TextColor3 = getMultColor(mult)
+            multLbl.Font = Enum.Font.GothamBold
+            multLbl.TextSize = 10
+            multLbl.TextXAlignment = Enum.TextXAlignment.Right
+            multLbl.Parent = row
+            
+            uiRows[itemName] = multLbl
+        end
+    end
+    populateMarket()
+    
+    spawn(function()
+        while screenGui and screenGui.Parent do
+            local timeLeft = math.max(0, nextRefreshTime - os.time())
+            Title.Text = string.format("📈 Market (%02d:%02d)", math.floor(timeLeft / 60), timeLeft % 60)
+            for itemName, mult in pairs(marketData) do
+                if uiRows[itemName] then
+                    uiRows[itemName].Text = string.format("x%.2f", mult)
+                    uiRows[itemName].TextColor3 = getMultColor(mult)
+                else
+                    populateMarket()
+                    break
+                end
+            end
+            task.wait(1)
+        end
+    end)
+end
+
+local function createAuctionUI()
+    local oldUI = player.PlayerGui:FindFirstChild("AuctionUI")
+    if oldUI then oldUI:Destroy() end
+    fetchAuction() 
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AuctionUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    local Main = Instance.new("Frame")
+    Main.Size = UDim2.new(0, 280, 0, 200)
+    Main.Position = UDim2.new(0.5, 120, 0.5, 10)
+    Main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Main.BackgroundTransparency = 0.1
+    Main.BorderSizePixel = 0
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = screenGui
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+    createModernStroke(Main, Color3.fromRGB(220, 180, 60))
+    
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 26)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    TitleBar.BackgroundTransparency = 0.5
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Main
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0.7, 0, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Text = "⚖️ Auction Shop"
+    Title.TextColor3 = Color3.fromRGB(220, 180, 60)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 20, 0, 20)
+    MinBtn.Position = UDim2.new(1, -46, 0.5, -10)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    MinBtn.TextSize = 12
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+    
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+    CloseBtn.Position = UDim2.new(1, -23, 0.5, -10)
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseBtn.TextSize = 10
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = TitleBar
+    Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
+    CloseBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+    
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size = UDim2.new(1, -10, 1, -32)
+    Scroll.Position = UDim2.new(0, 5, 0, 28)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.Parent = Main
+    
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            MinBtn.Text = "□"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 280, 0, 26) }):Play()
+            Scroll.Visible = false
+        else
+            MinBtn.Text = "−"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 280, 0, 200) }):Play()
+            task.wait(0.2)
+            Scroll.Visible = true
+        end
+    end)
+    
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 2)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = Scroll
+    
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 22)
+    header.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    header.BackgroundTransparency = 0.5
+    header.Parent = Scroll
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 4)
+    
+    local function addHeaderLbl(text, w, p, align)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(w, 0, 1, 0)
+        lbl.Position = UDim2.new(p, 0, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = text
+        lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 8
+        lbl.TextXAlignment = align
+        lbl.Parent = header
+    end
+    addHeaderLbl("Item", 0.35, 0.02, Enum.TextXAlignment.Left)
+    addHeaderLbl("Stock", 0.15, 0.38, Enum.TextXAlignment.Center)
+    addHeaderLbl("Price", 0.25, 0.54, Enum.TextXAlignment.Center)
+    addHeaderLbl("Action", 0.18, 0.80, Enum.TextXAlignment.Center)
+    
+    local function populateAuction()
+        for _, child in pairs(Scroll:GetChildren()) do
+            if child:IsA("Frame") and child ~= header then child:Destroy() end
+        end
+        table.sort(auctionItems, function(a, b) return (a.Order or 99) < (b.Order or 99) end)
+        
+        for _, slot in ipairs(auctionItems) do
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 24)
+            row.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            row.BackgroundTransparency = 0.5
+            row.Parent = Scroll
+            Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+            
+            local nameLbl = Instance.new("TextLabel")
+            nameLbl.Size = UDim2.new(0.35, 0, 1, 0)
+            nameLbl.Position = UDim2.new(0.02, 0, 0, 0)
+            nameLbl.BackgroundTransparency = 1
+            nameLbl.Text = slot.DisplayName or slot.ModelName
+            nameLbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+            nameLbl.Font = Enum.Font.GothamMedium
+            nameLbl.TextSize = 8
+            nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+            nameLbl.Parent = row
+            
+            local stockLbl = Instance.new("TextLabel")
+            stockLbl.Size = UDim2.new(0.15, 0, 1, 0)
+            stockLbl.Position = UDim2.new(0.38, 0, 0, 0)
+            stockLbl.BackgroundTransparency = 1
+            if slot.SoldOut or slot.Stock == 0 then
+                stockLbl.Text = "Sold"
+                stockLbl.TextColor3 = Color3.fromRGB(220, 60, 60)
+            else
+                stockLbl.Text = tostring(slot.Stock) .. "/" .. tostring(slot.MaxStock)
+                stockLbl.TextColor3 = Color3.fromRGB(100, 220, 100)
+            end
+            stockLbl.Font = Enum.Font.GothamMedium
+            stockLbl.TextSize = 8
+            stockLbl.TextXAlignment = Enum.TextXAlignment.Center
+            stockLbl.Parent = row
+            
+            local priceLbl = Instance.new("TextLabel")
+            priceLbl.Size = UDim2.new(0.25, 0, 1, 0)
+            priceLbl.Position = UDim2.new(0.54, 0, 0, 0)
+            priceLbl.BackgroundTransparency = 1
+            priceLbl.Text = CurrencySymbol .. formatNumber(slot.Price)
+            priceLbl.TextColor3 = Color3.fromRGB(255, 200, 80)
+            priceLbl.Font = Enum.Font.GothamMedium
+            priceLbl.TextSize = 8
+            priceLbl.TextXAlignment = Enum.TextXAlignment.Center
+            priceLbl.Parent = row
+            
+            local BuyBtn = Instance.new("TextButton")
+            BuyBtn.Size = UDim2.new(0.18, 0, 0.75, 0)
+            BuyBtn.Position = UDim2.new(0.80, 0, 0.125, 0)
+            local canBuy = not slot.SoldOut and slot.Stock > 0
+            BuyBtn.BackgroundColor3 = canBuy and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+            BuyBtn.BackgroundTransparency = 0.15
+            BuyBtn.Text = canBuy and "Buy" or "-"
+            BuyBtn.TextColor3 = canBuy and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+            BuyBtn.Font = Enum.Font.GothamBold
+            BuyBtn.TextSize = 8
+            BuyBtn.BorderSizePixel = 0
+            BuyBtn.Parent = row
+            Instance.new("UICorner", BuyBtn).CornerRadius = UDim.new(0, 4)
+            
+            BuyBtn.MouseButton1Click:Connect(function()
+                if canBuy and AuctionBuy then
+                    pcall(function() AuctionBuy:FireServer(slot.Key, 1) end)
+                    BuyBtn.Text = "..."
+                end
+            end)
+        end
+    end
+    populateAuction()
+    
+    spawn(function()
+        while screenGui and screenGui.Parent do
+            local currentTime = os.time() + auctionServerTimeOffset
+            local timeLeft = math.max(0, auctionRefreshEndsAt - currentTime)
+            Title.Text = string.format("⚖️ Auction (%02d:%02d)", math.floor(timeLeft / 60), timeLeft % 60)
+            populateAuction()
+            task.wait(1)
+        end
+    end)
+end
+
+-- ================================================
+-- UI: SEEDS & GEARS SHOP (COMPACT & MULTI-SELECT)
+-- ================================================
+
+local function createSeedUI()
+    local oldShop = player.PlayerGui:FindFirstChild("SeedShopUI")
+    if oldShop then oldShop:Destroy() end
+    local slots = loadSeedShop()
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "SeedShopUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    local Main = Instance.new("Frame")
+    Main.Size = UDim2.new(0, 300, 0, 240)
+    Main.Position = UDim2.new(0.5, -150, 0.5, -120)
+    Main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Main.BackgroundTransparency = 0.1
+    Main.BorderSizePixel = 0
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = screenGui
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+    createModernStroke(Main, Color3.fromRGB(255, 200, 50))
+    
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 26)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    TitleBar.BackgroundTransparency = 0.5
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Main
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0.55, 0, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Text = "🌱 Seed Shop (05:00)"
+    Title.TextColor3 = Color3.fromRGB(255, 200, 50)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+
+    local seedTimerRunning = true
+    local function updateSeedTimer()
+        local left = math.max(0, seedNextRefreshAt - os.time())
+        Title.Text = "🌱 Seed Shop (" .. formatCountdown(left) .. ")"
+        return left
+    end
+    updateSeedTimer()
+    
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+    CloseBtn.Position = UDim2.new(1, -23, 0.5, -10)
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseBtn.TextSize = 10
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = TitleBar
+    Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
+    CloseBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 20, 0, 20)
+    MinBtn.Position = UDim2.new(1, -46, 0.5, -10)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    MinBtn.TextSize = 12
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+    
+    local AutoBuyToggle = Instance.new("TextButton")
+    AutoBuyToggle.Size = UDim2.new(0, 65, 0, 20)
+    AutoBuyToggle.Position = UDim2.new(0.63, 0, 0.5, -10)
+    AutoBuyToggle.BackgroundColor3 = autoBuySeedEnabled and Color3.fromRGB(220, 60, 60) or Color3.fromRGB(60, 220, 120)
+    AutoBuyToggle.BackgroundTransparency = 0.15
+    AutoBuyToggle.Text = autoBuySeedEnabled and "Auto ON" or "Auto OFF"
+    AutoBuyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoBuyToggle.Font = Enum.Font.GothamBold
+    AutoBuyToggle.TextSize = 8
+    AutoBuyToggle.BorderSizePixel = 0
+    AutoBuyToggle.Parent = TitleBar
+    Instance.new("UICorner", AutoBuyToggle).CornerRadius = UDim.new(0, 4)
+    
+    AutoBuyToggle.MouseButton1Click:Connect(function()
+        autoBuySeedEnabled = not autoBuySeedEnabled
+        if autoBuySeedEnabled then spawn(autoBuySeedLoop) end
+        AutoBuyToggle.Text = autoBuySeedEnabled and "Auto ON" or "Auto OFF"
+        AutoBuyToggle.BackgroundColor3 = autoBuySeedEnabled and Color3.fromRGB(220, 60, 60) or Color3.fromRGB(60, 220, 120)
+    end)
+    
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size = UDim2.new(1, -10, 1, -32)
+    Scroll.Position = UDim2.new(0, 5, 0, 28)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.Parent = Main
+    
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            MinBtn.Text = "□"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 300, 0, 26) }):Play()
+            Scroll.Visible = false
+        else
+            MinBtn.Text = "−"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 300, 0, 240) }):Play()
+            task.wait(0.2)
+            Scroll.Visible = true
+        end
+    end)
+    
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 2)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = Scroll
+    
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 22)
+    header.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    header.BackgroundTransparency = 0.5
+    header.Parent = Scroll
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 4)
+    
+    local function addHeaderLbl(text, w, p, align)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(w, 0, 1, 0)
+        lbl.Position = UDim2.new(p, 0, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = text
+        lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 8
+        lbl.TextXAlignment = align
+        lbl.Parent = header
+    end
+    addHeaderLbl("Seed", 0.30, 0.02, Enum.TextXAlignment.Left)
+    addHeaderLbl("Stock", 0.15, 0.32, Enum.TextXAlignment.Center)
+    addHeaderLbl("Price", 0.22, 0.47, Enum.TextXAlignment.Center)
+    addHeaderLbl("Action", 0.31, 0.69, Enum.TextXAlignment.Center)
+    
+    local uiRows = {}
+    local refreshVisuals
+
+    for _, slot in pairs(slots) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 24)
+        row.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+        row.BackgroundTransparency = 0.5
+        row.Parent = Scroll
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+        
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Size = UDim2.new(0.30, 0, 1, 0)
+        nameLbl.Position = UDim2.new(0.02, 0, 0, 0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = slot.name
+        nameLbl.TextColor3 = slot.stock > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        nameLbl.Font = Enum.Font.GothamMedium
+        nameLbl.TextSize = 8
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.Parent = row
+        
+        local stockLbl = Instance.new("TextLabel")
+        stockLbl.Size = UDim2.new(0.15, 0, 1, 0)
+        stockLbl.Position = UDim2.new(0.32, 0, 0, 0)
+        stockLbl.BackgroundTransparency = 1
+        stockLbl.Text = slot.stock .. "/" .. slot.max
+        stockLbl.TextColor3 = slot.stock > 0 and Color3.fromRGB(100, 220, 100) or Color3.fromRGB(150, 150, 150)
+        stockLbl.Font = Enum.Font.GothamMedium
+        stockLbl.TextSize = 8
+        stockLbl.TextXAlignment = Enum.TextXAlignment.Center
+        stockLbl.Parent = row
+        
+        local priceLbl = Instance.new("TextLabel")
+        priceLbl.Size = UDim2.new(0.22, 0, 1, 0)
+        priceLbl.Position = UDim2.new(0.47, 0, 0, 0)
+        priceLbl.BackgroundTransparency = 1
+        priceLbl.Text = CurrencySymbol .. slot.price
+        priceLbl.TextColor3 = Color3.fromRGB(255, 200, 80)
+        priceLbl.Font = Enum.Font.GothamMedium
+        priceLbl.TextSize = 8
+        priceLbl.TextXAlignment = Enum.TextXAlignment.Center
+        priceLbl.Parent = row
+        
+        local BuyBtn = Instance.new("TextButton")
+        BuyBtn.Size = UDim2.new(0.16, 0, 0.75, 0)
+        BuyBtn.Position = UDim2.new(0.70, 0, 0.125, 0)
+        BuyBtn.BackgroundColor3 = slot.stock > 0 and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+        BuyBtn.BackgroundTransparency = 0.15
+        BuyBtn.Text = slot.stock > 0 and "Buy" or "-"
+        BuyBtn.TextColor3 = slot.stock > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        BuyBtn.Font = Enum.Font.GothamBold
+        BuyBtn.TextSize = 8
+        BuyBtn.BorderSizePixel = 0
+        BuyBtn.Parent = row
+        Instance.new("UICorner", BuyBtn).CornerRadius = UDim.new(0, 4)
+        
+        local SelectBtn = Instance.new("TextButton")
+        SelectBtn.Size = UDim2.new(0.12, 0, 0.75, 0)
+        SelectBtn.Position = UDim2.new(0.87, 0, 0.125, 0)
+        local isSelected = selectedSeedKeys[slot.key] == true
+        SelectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(255, 200, 50) or Color3.fromRGB(80, 80, 80)
+        SelectBtn.BackgroundTransparency = 0.15
+        SelectBtn.Text = "★"
+        SelectBtn.TextColor3 = isSelected and Color3.fromRGB(255, 200, 50) or Color3.fromRGB(150, 150, 150)
+        SelectBtn.Font = Enum.Font.GothamBold
+        SelectBtn.TextSize = 10
+        SelectBtn.BorderSizePixel = 0
+        SelectBtn.Parent = row
+        Instance.new("UICorner", SelectBtn).CornerRadius = UDim.new(0, 4)
+        
+        uiRows[slot.key] = { stockLbl = stockLbl, BuyBtn = BuyBtn, SelectBtn = SelectBtn }
+        
+        BuyBtn.MouseButton1Click:Connect(function()
+            if seedData[slot.key] and seedData[slot.key].stock > 0 then
+                buySeed(slot.key, 1)
+                task.wait(0.5) 
+                if refreshVisuals then refreshVisuals() end
+            end
+        end)
+        
+        SelectBtn.MouseButton1Click:Connect(function()
+            selectedSeedKeys[slot.key] = not selectedSeedKeys[slot.key]
+            if refreshVisuals then refreshVisuals() end
+        end)
+    end
+    
+    refreshVisuals = function()
+        local currentSlots = loadSeedShop()
+        for _, slot in pairs(currentSlots) do
+            local r = uiRows[slot.key]
+            if r then
+                r.stockLbl.Text = slot.stock .. "/" .. slot.max
+                r.stockLbl.TextColor3 = slot.stock > 0 and Color3.fromRGB(100, 220, 100) or Color3.fromRGB(150, 150, 150)
+                r.BuyBtn.Text = slot.stock > 0 and "Buy" or "-"
+                r.BuyBtn.BackgroundColor3 = slot.stock > 0 and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+                
+                local isSelected = selectedSeedKeys[slot.key] == true
+                r.SelectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(255, 200, 50) or Color3.fromRGB(80, 80, 80)
+                r.SelectBtn.TextColor3 = isSelected and Color3.fromRGB(255, 200, 50) or Color3.fromRGB(150, 150, 150)
+            end
+        end
+    end
+
+    spawn(function()
+        while screenGui and screenGui.Parent do
+            local left = updateSeedTimer()
+            if left <= 0 then
+                loadSeedShop()
+                updateSeedTimer()
+            end
+            if refreshVisuals then refreshVisuals() end
+            task.wait(1)
+        end
+    end)
+end
+
+local function createGearUI()
+    local oldShop = player.PlayerGui:FindFirstChild("GearShopUI")
+    if oldShop then oldShop:Destroy() end
+    local items = loadGearShop()
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "GearShopUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    local Main = Instance.new("Frame")
+    Main.Size = UDim2.new(0, 280, 0, 220)
+    Main.Position = UDim2.new(0.5, -140, 0.5, -110)
+    Main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Main.BackgroundTransparency = 0.1
+    Main.BorderSizePixel = 0
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = screenGui
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+    createModernStroke(Main, Color3.fromRGB(100, 150, 220))
+    
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 26)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    TitleBar.BackgroundTransparency = 0.5
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Main
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0.48, 0, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Text = "🔧 Gear (05:00)"
+    Title.TextColor3 = Color3.fromRGB(100, 150, 220)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+
+    local function updateGearTimer()
+        local target = gearNextRestockAt
+        if type(target) ~= "number" or target <= os.time() then
+            -- Jika server belum mengirim timestamp atau timestamp sudah lewat,
+            -- gunakan siklus fallback 5 menit sampai event server berikutnya masuk.
+            gearNextRestockAt = os.time() + GEAR_RESTOCK_INTERVAL
+            target = gearNextRestockAt
+        end
+        local left = math.max(0, target - os.time())
+        Title.Text = "🔧 Gear (" .. formatCountdown(left) .. ")"
+        return left
+    end
+    updateGearTimer()
+    
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+    CloseBtn.Position = UDim2.new(1, -23, 0.5, -10)
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseBtn.TextSize = 10
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = TitleBar
+    Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
+    CloseBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 20, 0, 20)
+    MinBtn.Position = UDim2.new(1, -46, 0.5, -10)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    MinBtn.TextSize = 12
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+    
+    local NativeBtn = Instance.new("TextButton")
+    NativeBtn.Size = UDim2.new(0, 45, 0, 20)
+    NativeBtn.Position = UDim2.new(0.36, 0, 0.5, -10)
+    NativeBtn.BackgroundColor3 = Color3.fromRGB(100, 150, 220)
+    NativeBtn.BackgroundTransparency = 0.15
+    NativeBtn.Text = "Native"
+    NativeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    NativeBtn.Font = Enum.Font.GothamBold
+    NativeBtn.TextSize = 8
+    NativeBtn.BorderSizePixel = 0
+    NativeBtn.Parent = TitleBar
+    Instance.new("UICorner", NativeBtn).CornerRadius = UDim.new(0, 4)
+    NativeBtn.MouseButton1Click:Connect(function()
+        if OpenGearShop then pcall(function() firesignal(OpenGearShop.OnClientEvent) end) end
+    end)
+    
+    local AutoBuyToggle = Instance.new("TextButton")
+    AutoBuyToggle.Size = UDim2.new(0, 65, 0, 20)
+    AutoBuyToggle.Position = UDim2.new(0.60, 0, 0.5, -10)
+    AutoBuyToggle.BackgroundColor3 = autoBuyGearEnabled and Color3.fromRGB(220, 60, 60) or Color3.fromRGB(60, 220, 120)
+    AutoBuyToggle.BackgroundTransparency = 0.15
+    AutoBuyToggle.Text = autoBuyGearEnabled and "Auto ON" or "Auto OFF"
+    AutoBuyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoBuyToggle.Font = Enum.Font.GothamBold
+    AutoBuyToggle.TextSize = 8
+    AutoBuyToggle.BorderSizePixel = 0
+    AutoBuyToggle.Parent = TitleBar
+    Instance.new("UICorner", AutoBuyToggle).CornerRadius = UDim.new(0, 4)
+    
+    AutoBuyToggle.MouseButton1Click:Connect(function()
+        autoBuyGearEnabled = not autoBuyGearEnabled
+        if autoBuyGearEnabled then spawn(autoBuyGearLoop) end
+        AutoBuyToggle.Text = autoBuyGearEnabled and "Auto ON" or "Auto OFF"
+        AutoBuyToggle.BackgroundColor3 = autoBuyGearEnabled and Color3.fromRGB(220, 60, 60) or Color3.fromRGB(60, 220, 120)
+    end)
+    
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size = UDim2.new(1, -10, 1, -32)
+    Scroll.Position = UDim2.new(0, 5, 0, 28)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.Parent = Main
+    
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            MinBtn.Text = "□"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 280, 0, 26) }):Play()
+            Scroll.Visible = false
+        else
+            MinBtn.Text = "−"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 280, 0, 220) }):Play()
+            task.wait(0.2)
+            Scroll.Visible = true
+        end
+    end)
+    
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 2)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = Scroll
+    
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 22)
+    header.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    header.BackgroundTransparency = 0.5
+    header.Parent = Scroll
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 4)
+    
+    local function addHeaderLbl(text, w, p, align)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(w, 0, 1, 0)
+        lbl.Position = UDim2.new(p, 0, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = text
+        lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 8
+        lbl.TextXAlignment = align
+        lbl.Parent = header
+    end
+    addHeaderLbl("Gear", 0.42, 0.02, Enum.TextXAlignment.Left)
+    addHeaderLbl("Stock", 0.16, 0.44, Enum.TextXAlignment.Center)
+    addHeaderLbl("Price", 0.20, 0.61, Enum.TextXAlignment.Center)
+    addHeaderLbl("Act", 0.18, 0.80, Enum.TextXAlignment.Center)
+    
+    local uiRows = {}
+    local refreshVisuals
+
+    for _, slot in pairs(items) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 24)
+        row.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+        row.BackgroundTransparency = 0.5
+        row.Parent = Scroll
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+        
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Size = UDim2.new(0.42, 0, 1, 0)
+        nameLbl.Position = UDim2.new(0.02, 0, 0, 0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = slot.name
+        nameLbl.TextColor3 = (slot.stock or 0) > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        nameLbl.Font = Enum.Font.GothamMedium
+        nameLbl.TextSize = 8
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.Parent = row
+        
+        local stockLbl = Instance.new("TextLabel")
+        stockLbl.Size = UDim2.new(0.16, 0, 1, 0)
+        stockLbl.Position = UDim2.new(0.44, 0, 0, 0)
+        stockLbl.BackgroundTransparency = 1
+        stockLbl.Text = tostring(slot.stock or 0)
+        stockLbl.TextColor3 = (slot.stock or 0) > 0 and Color3.fromRGB(100, 220, 100) or Color3.fromRGB(220, 80, 80)
+        stockLbl.Font = Enum.Font.GothamMedium
+        stockLbl.TextSize = 8
+        stockLbl.TextXAlignment = Enum.TextXAlignment.Center
+        stockLbl.Parent = row
+        
+        local priceLbl = Instance.new("TextLabel")
+        priceLbl.Size = UDim2.new(0.20, 0, 1, 0)
+        priceLbl.Position = UDim2.new(0.61, 0, 0, 0)
+        priceLbl.BackgroundTransparency = 1
+        priceLbl.Text = CurrencySymbol .. formatNumber(slot.price)
+        priceLbl.TextColor3 = Color3.fromRGB(255, 200, 80)
+        priceLbl.Font = Enum.Font.GothamMedium
+        priceLbl.TextSize = 8
+        priceLbl.TextXAlignment = Enum.TextXAlignment.Center
+        priceLbl.Parent = row
+        
+        local BuyBtn = Instance.new("TextButton")
+        BuyBtn.Size = UDim2.new(0.10, 0, 0.75, 0)
+        BuyBtn.Position = UDim2.new(0.80, 0, 0.125, 0)
+        local canBuy = (slot.stock or 0) > 0
+        BuyBtn.BackgroundColor3 = canBuy and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+        BuyBtn.BackgroundTransparency = 0.15
+        BuyBtn.Text = canBuy and "Buy" or "-"
+        BuyBtn.TextColor3 = canBuy and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        BuyBtn.Font = Enum.Font.GothamBold
+        BuyBtn.TextSize = 8
+        BuyBtn.BorderSizePixel = 0
+        BuyBtn.Parent = row
+        Instance.new("UICorner", BuyBtn).CornerRadius = UDim.new(0, 4)
+        
+        local SelectBtn = Instance.new("TextButton")
+        SelectBtn.Size = UDim2.new(0.08, 0, 0.75, 0)
+        SelectBtn.Position = UDim2.new(0.91, 0, 0.125, 0)
+        local isSelected = selectedGearKeys[slot.id] == true
+        SelectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(100, 150, 220) or Color3.fromRGB(80, 80, 80)
+        SelectBtn.BackgroundTransparency = 0.15
+        SelectBtn.Text = "★"
+        SelectBtn.TextColor3 = isSelected and Color3.fromRGB(100, 150, 220) or Color3.fromRGB(150, 150, 150)
+        SelectBtn.Font = Enum.Font.GothamBold
+        SelectBtn.TextSize = 9
+        SelectBtn.BorderSizePixel = 0
+        SelectBtn.Parent = row
+        Instance.new("UICorner", SelectBtn).CornerRadius = UDim.new(0, 4)
+        
+        uiRows[slot.id] = { SelectBtn = SelectBtn, StockLbl = stockLbl, BuyBtn = BuyBtn, NameLbl = nameLbl }
+        
+        BuyBtn.MouseButton1Click:Connect(function()
+            if (gearData[slot.id] and (gearData[slot.id].stock or 0) > 0) then
+                buyGear(slot.id, 1)
+            end
+        end)
+        
+        SelectBtn.MouseButton1Click:Connect(function()
+            selectedGearKeys[slot.id] = not selectedGearKeys[slot.id]
+            if refreshVisuals then refreshVisuals() end
+        end)
+    end
+    
+    refreshVisuals = function()
+        local currentItems = loadGearShop()
+        for id, row in pairs(uiRows) do
+            local gear = gearData[id]
+            local stock = gear and (tonumber(gear.stock) or 0) or 0
+            local canBuy = stock > 0
+            row.StockLbl.Text = tostring(stock)
+            row.StockLbl.TextColor3 = canBuy and Color3.fromRGB(100, 220, 100) or Color3.fromRGB(220, 80, 80)
+            row.NameLbl.TextColor3 = canBuy and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+            row.BuyBtn.Text = canBuy and "Buy" or "-"
+            row.BuyBtn.BackgroundColor3 = canBuy and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+            row.BuyBtn.TextColor3 = canBuy and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+            local isSelected = selectedGearKeys[id] == true
+            row.SelectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(100, 150, 220) or Color3.fromRGB(80, 80, 80)
+            row.SelectBtn.TextColor3 = isSelected and Color3.fromRGB(100, 150, 220) or Color3.fromRGB(150, 150, 150)
+        end
+    end
+
+    spawn(function()
+        while screenGui and screenGui.Parent do
+            updateGearTimer()
+            refreshVisuals()
+            task.wait(1)
+        end
+    end)
+end
+
+-- ================================================
+-- CRATE (BLOCK & PROPS) SHOP UI
+-- ================================================
+
+local function loadCrateShop(isProp)
+    local remote = isProp and GetPropShopData or (GetBuildShopData or GetCrateShopData)
+    if remote then
+        local success, data = pcall(function() return remote:InvokeServer() end)
+        if success and type(data) == "table" and data.crates then return data end
+    end
+    return nil
+end
+
+local function createCrateUI(isProp)
+    local shopName = isProp and "PropShopUI" or "CrateShopUI"
+    local oldShop = player.PlayerGui:FindFirstChild(shopName)
+    if oldShop then oldShop:Destroy() end
+    
+    local data = loadCrateShop(isProp)
+    local crates = data and data.crates or {}
+    local budsCount = data and data.buds or 0
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = shopName
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    local Main = Instance.new("Frame")
+    Main.Size = UDim2.new(0, 300, 0, isProp and 200 or 160)
+    Main.Position = UDim2.new(0.5, 20, 0.5, isProp and 10 or -70) 
+    Main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Main.BackgroundTransparency = 0.1
+    Main.BorderSizePixel = 0
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = screenGui
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+    createModernStroke(Main, isProp and Color3.fromRGB(220, 120, 100) or Color3.fromRGB(220, 100, 200))
+    
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 26)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    TitleBar.BackgroundTransparency = 0.5
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Main
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0.4, 0, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Text = (isProp and "⛺ Props" or "🧱 Block") .. " (B:" .. formatNumber(budsCount) .. ")"
+    Title.TextColor3 = isProp and Color3.fromRGB(220, 120, 100) or Color3.fromRGB(220, 100, 200)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 20, 0, 20)
+    MinBtn.Position = UDim2.new(1, -46, 0.5, -10)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    MinBtn.TextSize = 12
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+    
+    local CloseShopBtn = Instance.new("TextButton")
+    CloseShopBtn.Size = UDim2.new(0, 20, 0, 20)
+    CloseShopBtn.Position = UDim2.new(1, -23, 0.5, -10)
+    CloseShopBtn.Text = "X"
+    CloseShopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseShopBtn.TextSize = 10
+    CloseShopBtn.Font = Enum.Font.GothamBold
+    CloseShopBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    CloseShopBtn.BorderSizePixel = 0
+    CloseShopBtn.Parent = TitleBar
+    Instance.new("UICorner", CloseShopBtn).CornerRadius = UDim.new(0, 4)
+    CloseShopBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+    
+    local NativeBtn = Instance.new("TextButton")
+    NativeBtn.Size = UDim2.new(0, 45, 0, 20)
+    NativeBtn.Position = UDim2.new(0.36, 0, 0.5, -10)
+    NativeBtn.BackgroundColor3 = Color3.fromRGB(100, 150, 220)
+    NativeBtn.BackgroundTransparency = 0.15
+    NativeBtn.Text = "Native"
+    NativeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    NativeBtn.Font = Enum.Font.GothamBold
+    NativeBtn.TextSize = 8
+    NativeBtn.BorderSizePixel = 0
+    NativeBtn.Parent = TitleBar
+    Instance.new("UICorner", NativeBtn).CornerRadius = UDim.new(0, 4)
+    NativeBtn.MouseButton1Click:Connect(function() 
+        local remote = isProp and OpenPropShop or OpenBuildShop
+        if remote then firesignal(remote.OnClientEvent) end 
+    end)
+    
+    if not isProp then
+        local AutoBuyBlockToggle = Instance.new("TextButton")
+        AutoBuyBlockToggle.Size = UDim2.new(0, 55, 0, 20)
+        AutoBuyBlockToggle.Position = UDim2.new(0.57, 0, 0.5, -10)
+        AutoBuyBlockToggle.BackgroundColor3 = autoBuyBlockEnabled and Color3.fromRGB(220, 60, 60) or Color3.fromRGB(60, 220, 120)
+        AutoBuyBlockToggle.BackgroundTransparency = 0.15
+        AutoBuyBlockToggle.Text = autoBuyBlockEnabled and "Auto ON" or "Auto OFF"
+        AutoBuyBlockToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+        AutoBuyBlockToggle.Font = Enum.Font.GothamBold
+        AutoBuyBlockToggle.TextSize = 7
+        AutoBuyBlockToggle.BorderSizePixel = 0
+        AutoBuyBlockToggle.Parent = TitleBar
+        Instance.new("UICorner", AutoBuyBlockToggle).CornerRadius = UDim.new(0, 4)
+        
+        AutoBuyBlockToggle.MouseButton1Click:Connect(function()
+            autoBuyBlockEnabled = not autoBuyBlockEnabled
+            if autoBuyBlockEnabled then spawn(autoBuyBlockLoop) end
+            AutoBuyBlockToggle.Text = autoBuyBlockEnabled and "Auto ON" or "Auto OFF"
+            AutoBuyBlockToggle.BackgroundColor3 = autoBuyBlockEnabled and Color3.fromRGB(220, 60, 60) or Color3.fromRGB(60, 220, 120)
+        end)
+    end
+    
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size = UDim2.new(1, -10, 1, -32)
+    Scroll.Position = UDim2.new(0, 5, 0, 28)
+    Scroll.BackgroundTransparency = 1
+    Scroll.BorderSizePixel = 0
+    Scroll.ScrollBarThickness = 3
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.Parent = Main
+    
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            MinBtn.Text = "□"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 280, 0, 26) }):Play()
+            Scroll.Visible = false
+        else
+            MinBtn.Text = "−"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 280, 0, isProp and 180 or 160) }):Play()
+            task.wait(0.2)
+            Scroll.Visible = true
+        end
+    end)
+    
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 2)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = Scroll
+    
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 22)
+    header.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    header.BackgroundTransparency = 0.5
+    header.Parent = Scroll
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 4)
+    
+    local function addHeaderLbl(text, w, p, align)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(w, 0, 1, 0)
+        lbl.Position = UDim2.new(p, 0, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = text
+        lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 8
+        lbl.TextXAlignment = align
+        lbl.Parent = header
+    end
+    addHeaderLbl("Crate", 0.32, 0.02, Enum.TextXAlignment.Left)
+    addHeaderLbl("Stock", 0.16, 0.35, Enum.TextXAlignment.Center)
+    addHeaderLbl("Price", 0.22, 0.52, Enum.TextXAlignment.Center)
+    if not isProp then
+        addHeaderLbl("Act", 0.12, 0.75, Enum.TextXAlignment.Center)
+        addHeaderLbl("★", 0.10, 0.88, Enum.TextXAlignment.Center)
+    else
+        addHeaderLbl("Action", 0.24, 0.75, Enum.TextXAlignment.Center)
+    end
+    
+    local uiRows = {}
+    local refreshVisuals
+
+    for _, slot in ipairs(crates) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 24)
+        row.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+        row.BackgroundTransparency = 0.5
+        row.Parent = Scroll
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+        
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Size = UDim2.new(0.32, 0, 1, 0)
+        nameLbl.Position = UDim2.new(0.02, 0, 0, 0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = slot.name
+        nameLbl.TextColor3 = slot.stock > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        nameLbl.Font = Enum.Font.GothamMedium
+        nameLbl.TextSize = 8
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.Parent = row
+        
+        local stockLbl = Instance.new("TextLabel")
+        stockLbl.Size = UDim2.new(0.16, 0, 1, 0)
+        stockLbl.Position = UDim2.new(0.35, 0, 0, 0)
+        stockLbl.BackgroundTransparency = 1
+        stockLbl.Text = slot.stock .. "/" .. slot.max
+        stockLbl.TextColor3 = slot.stock > 0 and Color3.fromRGB(100, 220, 100) or Color3.fromRGB(150, 150, 150)
+        stockLbl.Font = Enum.Font.GothamMedium
+        stockLbl.TextSize = 8
+        stockLbl.TextXAlignment = Enum.TextXAlignment.Center
+        stockLbl.Parent = row
+        
+        local priceLbl = Instance.new("TextLabel")
+        priceLbl.Size = UDim2.new(0.22, 0, 1, 0)
+        priceLbl.Position = UDim2.new(0.52, 0, 0, 0)
+        priceLbl.BackgroundTransparency = 1
+        priceLbl.Text = "🍃" .. formatNumber(slot.price)
+        priceLbl.TextColor3 = Color3.fromRGB(255, 120, 180)
+        priceLbl.Font = Enum.Font.GothamMedium
+        priceLbl.TextSize = 8
+        priceLbl.TextXAlignment = Enum.TextXAlignment.Center
+        priceLbl.Parent = row
+        
+        local BuyBtn = Instance.new("TextButton")
+        BuyBtn.Size = UDim2.new(not isProp and 0.12 or 0.16, 0, 0.75, 0)
+        BuyBtn.Position = UDim2.new(0.75, 0, 0.125, 0)
+        BuyBtn.BackgroundColor3 = slot.stock > 0 and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+        BuyBtn.BackgroundTransparency = 0.15
+        BuyBtn.Text = slot.stock > 0 and "Buy" or "-"
+        BuyBtn.TextColor3 = slot.stock > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+        BuyBtn.Font = Enum.Font.GothamBold
+        BuyBtn.TextSize = 8
+        BuyBtn.BorderSizePixel = 0
+        BuyBtn.Parent = row
+        Instance.new("UICorner", BuyBtn).CornerRadius = UDim.new(0, 4)
+        
+        local SelectBtn = nil
+        if not isProp then
+            SelectBtn = Instance.new("TextButton")
+            SelectBtn.Size = UDim2.new(0.10, 0, 0.75, 0)
+            SelectBtn.Position = UDim2.new(0.88, 0, 0.125, 0)
+            local isSelected = selectedBlockKeys[slot.id] == true
+            SelectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(220, 100, 200) or Color3.fromRGB(80, 80, 80)
+            SelectBtn.BackgroundTransparency = 0.15
+            SelectBtn.Text = "★"
+            SelectBtn.TextColor3 = isSelected and Color3.fromRGB(220, 100, 200) or Color3.fromRGB(150, 150, 150)
+            SelectBtn.Font = Enum.Font.GothamBold
+            SelectBtn.TextSize = 9
+            SelectBtn.BorderSizePixel = 0
+            SelectBtn.Parent = row
+            Instance.new("UICorner", SelectBtn).CornerRadius = UDim.new(0, 4)
+            
+            SelectBtn.MouseButton1Click:Connect(function()
+                selectedBlockKeys[slot.id] = not selectedBlockKeys[slot.id]
+                if refreshVisuals then refreshVisuals() end
+            end)
+        end
+        
+        uiRows[slot.id] = { stockLbl = stockLbl, BuyBtn = BuyBtn, SelectBtn = SelectBtn }
+        
+        BuyBtn.MouseButton1Click:Connect(function()
+            if BuyCrate then
+                pcall(function() BuyCrate:FireServer(slot.id) end)
+                task.wait(0.5) 
+                if refreshVisuals then refreshVisuals() end
+            end
+        end)
+    end
+    
+    refreshVisuals = function()
+        local d = loadCrateShop(isProp)
+        if not d then return end
+        Title.Text = (isProp and "⛺ Props" or "🧱 Block") .. " (B:" .. formatNumber(d.buds) .. ")"
+        for _, slot in ipairs(d.crates) do
+            local r = uiRows[slot.id]
+            if r then
+                r.stockLbl.Text = slot.stock .. "/" .. slot.max
+                r.stockLbl.TextColor3 = slot.stock > 0 and Color3.fromRGB(100, 220, 100) or Color3.fromRGB(150, 150, 150)
+                r.BuyBtn.Text = slot.stock > 0 and "Buy" or "-"
+                r.BuyBtn.BackgroundColor3 = slot.stock > 0 and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(80, 80, 80)
+                r.BuyBtn.TextColor3 = slot.stock > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
+                
+                if r.SelectBtn then
+                    local isSelected = selectedBlockKeys[slot.id] == true
+                    r.SelectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(220, 100, 200) or Color3.fromRGB(80, 80, 80)
+                    r.SelectBtn.TextColor3 = isSelected and Color3.fromRGB(220, 100, 200) or Color3.fromRGB(150, 150, 150)
+                end
+            end
+        end
+    end
+
+    spawn(function()
+        while screenGui and screenGui.Parent do
+            task.wait(3)
+            if refreshVisuals then refreshVisuals() end
+        end
+    end)
+end
+
+local function createCrateShopUI() createCrateUI(false) end
+local function createPropShopUI() createCrateUI(true) end
+
+-- ================================================
+-- SELL ALL LOGIC (TELEPORT TO SELL AND RETURN)
+-- ================================================
+
+local function sellAll()
+    if not BoothSellAll then return nil end
+    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    
+    local originalCFrame = nil
+    if hrp then
+        originalCFrame = hrp.CFrame
+    end
+    
+    if TeleportRequest then
+        pcall(function() TeleportRequest:FireServer("SELL") end)
+        task.wait(0.3)
+    end
+    
+    local success, result = pcall(function() return BoothSellAll:InvokeServer() end)
+    
+    if originalCFrame and hrp then
+        task.wait(0.1)
+        hrp.CFrame = originalCFrame
+    end
+    
+    if success and type(result) == "table" then return result end
+    return nil
+end
+
+-- ================================================
+-- ADMIN ABUSE TICKETS / AUTO TELEPORT / INSTANT INTERACT
+-- ================================================
+-- The game currently exposes an ADMIN ABUSE folder with ticket
+-- objects such as AATicket_33, AATicket_34, AATicket_35.
+--
+-- This section intentionally does NOT assume an unknown Admin Abuse
+-- RemoteEvent. It discovers ProximityPrompts under the ticket objects.
+-- If the game changes the ticket interaction into a server-only remote,
+-- the script will report that the prompt was not found instead of
+-- inventing a remote/argument format.
+
+local adminAbuseEnabled = false
+local adminAbuseTeleportEnabled = false
+local instantInteractEnabled = false
+
+local adminAbuseLoopRunning = false
+local adminAbuseLastTicket = nil
+local adminAbuseClaimed = {}
+
+local instantInteractConnection = nil
+
+local function getAdminAbuseFolder()
+    return Workspace:FindFirstChild("ADMIN ABUSE")
+        or Workspace:FindFirstChild("Admin Abuse")
+        or Workspace:FindFirstChild("ADMIN_ABUSE")
+end
+
+local function isAdminAbuseTicket(obj)
+    return obj and type(obj.Name) == "string"
+        and obj.Name:match("^AATicket_%d+$") ~= nil
+end
+
+local function getWorldPosition(obj)
+    if not obj then return nil end
+
+    if obj:IsA("BasePart") then
+        return obj.Position
+    end
+
+    if obj:IsA("Attachment") then
+        return obj.WorldPosition
+    end
+
+    if obj:IsA("Model") then
+        local ok, pivot = pcall(function()
+            return obj:GetPivot()
+        end)
+        if ok and pivot then
+            return pivot.Position
+        end
+
+        local primary = obj.PrimaryPart
+        if primary then
+            return primary.Position
+        end
+    end
+
+    local part = obj:FindFirstChildWhichIsA("BasePart", true)
+    return part and part.Position or nil
+end
+
+local function findTicketPrompt(ticket)
+    if not ticket then return nil end
+
+    if ticket:IsA("ProximityPrompt") then
+        return ticket
+    end
+
+    local direct = ticket:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if direct then return direct end
+
+    -- Some builds put the prompt in a sibling/parent container.
+    local parent = ticket.Parent
+    if parent then
+        for _, child in ipairs(parent:GetChildren()) do
+            if child ~= ticket and child:IsA("ProximityPrompt") then
+                return child
+            end
+        end
+    end
+
+    return nil
+end
+
+local function getAdminAbuseTickets()
+    local folder = getAdminAbuseFolder()
+    if not folder then return {} end
+
+    local tickets = {}
+
+    for _, obj in ipairs(folder:GetChildren()) do
+        if isAdminAbuseTicket(obj) then
+            table.insert(tickets, obj)
+        end
+    end
+
+    table.sort(tickets, function(a, b)
+        return tostring(a.Name) < tostring(b.Name)
+    end)
+
+    return tickets
+end
+
+local function getNearestAdminAbuseTicket()
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local rootPos = root and root.Position
+
+    local tickets = getAdminAbuseTickets()
+    local nearest = nil
+    local nearestDistance = math.huge
+
+    for _, ticket in ipairs(tickets) do
+        local pos = getWorldPosition(ticket)
+
+        if pos and rootPos then
+            local distance = (pos - rootPos).Magnitude
+            if distance < nearestDistance then
+                nearestDistance = distance
+                nearest = ticket
+            end
+        elseif not nearest then
+            nearest = ticket
+        end
+    end
+
+    return nearest
+end
+
+local function teleportToAdminAbuseTicket(ticket)
+    if not ticket then return false end
+
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    local pos = getWorldPosition(ticket)
+
+    if not root or not pos then
+        return false
+    end
+
+    local target = CFrame.new(pos + Vector3.new(0, 3, 0))
+
+    local ok = pcall(function()
+        root.CFrame = target
+    end)
+
+    if ok then
+        print("[AzothAja] Admin Abuse TP -> " .. tostring(ticket.Name))
+    end
+
+    return ok
+end
+
+local function triggerPromptInstant(prompt)
+    if not prompt or not prompt.Parent then
+        return false
+    end
+
+    -- Preferred executor helper.
+    if typeof(fireproximityprompt) == "function" then
+        local ok = pcall(function()
+            fireproximityprompt(prompt)
+        end)
+
+        if ok then
+            return true
+        end
+    end
+
+    -- Client-side signal fallback.
+    if typeof(firesignal) == "function" then
+        local ok = pcall(function()
+            firesignal(ProximityPromptService.PromptTriggered, prompt, player)
+        end)
+
+        if ok then
+            return true
+        end
+    end
+
+    -- Native fallback. HoldDuration is set to zero when possible.
+    local began = pcall(function()
+        prompt:InputHoldBegin()
+    end)
+
+    if began then
+        task.defer(function()
+            pcall(function()
+                prompt:InputHoldEnd()
+            end)
+        end)
+        return true
+    end
+
+    return false
+end
+
+local function claimAdminAbuseTicket(ticket)
+    local prompt = findTicketPrompt(ticket)
+
+    if not prompt then
+        return false, "prompt_missing"
+    end
+
+    if instantInteractEnabled then
+        pcall(function()
+            prompt.HoldDuration = 0
+        end)
+    end
+
+    local ok = triggerPromptInstant(prompt)
+
+    if ok then
+        print("[AzothAja] Admin Abuse claim -> " .. tostring(ticket.Name))
+        return true, "claimed"
+    end
+
+    return false, "trigger_failed"
+end
+
+local function setPromptInstant(prompt, state)
+    if not prompt or not prompt:IsA("ProximityPrompt") then
+        return
+    end
+
+    if state then
+        pcall(function()
+            prompt.HoldDuration = 0
+        end)
+    end
+end
+
+local function setInstantInteract(state)
+    instantInteractEnabled = state
+
+    if instantInteractConnection then
+        instantInteractConnection:Disconnect()
+        instantInteractConnection = nil
+    end
+
+    if state then
+        -- Apply to prompts already in Workspace.
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("ProximityPrompt") then
+                setPromptInstant(obj, true)
+            end
+        end
+
+        -- Apply to prompts created after the toggle.
+        instantInteractConnection = Workspace.DescendantAdded:Connect(function(obj)
+            if instantInteractEnabled and obj:IsA("ProximityPrompt") then
+                task.defer(function()
+                    if instantInteractEnabled and obj.Parent then
+                        setPromptInstant(obj, true)
+                    end
+                end)
+            end
+        end)
+
+        print("[AzothAja] Instant Interact: Enabled")
+    else
+        print("[AzothAja] Instant Interact: Disabled")
+    end
+end
+
+local function clearMissingAdminAbuseClaims()
+    local live = {}
+    for _, ticket in ipairs(getAdminAbuseTickets()) do
+        live[ticket] = true
+    end
+
+    for ticket in pairs(adminAbuseClaimed) do
+        if not live[ticket] then
+            adminAbuseClaimed[ticket] = nil
+        end
+    end
+end
+
+local function autoClaimAdminAbuseLoop()
+    if adminAbuseLoopRunning then return end
+
+    adminAbuseLoopRunning = true
+
+    while adminAbuseEnabled do
+        clearMissingAdminAbuseClaims()
+
+        local tickets = getAdminAbuseTickets()
+
+        if #tickets > 0 then
+            for _, ticket in ipairs(tickets) do
+                if not adminAbuseEnabled then break end
+
+                if not adminAbuseClaimed[ticket] then
+                    if adminAbuseTeleportEnabled then
+                        teleportToAdminAbuseTicket(ticket)
+                        task.wait(0.15)
+                    end
+
+                    local success, reason = claimAdminAbuseTicket(ticket)
+
+                    if success then
+                        adminAbuseClaimed[ticket] = true
+                    elseif reason == "prompt_missing" then
+                        -- Keep it unclaimed so it can be retried if the
+                        -- prompt is inserted later.
+                    end
+
+                    task.wait(0.25)
+                end
+            end
+        end
+
+        task.wait(0.5)
+    end
+
+    adminAbuseLoopRunning = false
+end
+
+local function toggleAdminAbuse(state)
+    adminAbuseEnabled = state
+
+    if adminAbuseEnabled then
+        task.spawn(autoClaimAdminAbuseLoop)
+        print("[AzothAja] Admin Abuse Auto Claim: Enabled")
+    else
+        print("[AzothAja] Admin Abuse Auto Claim: Disabled")
+    end
+end
+
+local function toggleAdminAbuseTeleport(state)
+    adminAbuseTeleportEnabled = state
+    print("[AzothAja] Admin Abuse Auto Teleport: " .. (state and "Enabled" or "Disabled"))
+
+    -- If enabled while a ticket already exists, move once immediately.
+    if state then
+        local ticket = getNearestAdminAbuseTicket()
+        if ticket then
+            teleportToAdminAbuseTicket(ticket)
+        end
+    end
+end
+
+
+-- ================================================
+-- CREATE MAIN MENU (OPTIMIZED & NATURAL)
+-- ================================================
+
+local function createGUI()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AzothAja"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = guiParent
+
+    local Main = Instance.new("Frame")
+    Main.Size = UDim2.new(0, 230, 0, 360) 
+    Main.Position = UDim2.new(0.5, -115, 0.5, -177)
+    Main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    Main.BackgroundTransparency = 0.1
+    Main.BorderSizePixel = 0
+    Main.Active = true
+    Main.Draggable = true
+    Main.Parent = ScreenGui
+    Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+    createModernStroke(Main, Color3.fromRGB(60, 220, 120))
+
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 26)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    TitleBar.BackgroundTransparency = 0.5
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Main
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0.4, 0, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Text = "👨‍🌾 Azoth"
+    Title.TextColor3 = Color3.fromRGB(60, 220, 120)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+
+    local ZoneLabel = Instance.new("TextLabel")
+    ZoneLabel.Size = UDim2.new(0.2, 0, 1, 0)
+    ZoneLabel.Position = UDim2.new(0.38, 0, 0, 0)
+    ZoneLabel.BackgroundTransparency = 1
+    ZoneLabel.Text = "Z" .. playerZone
+    ZoneLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
+    ZoneLabel.Font = Enum.Font.GothamBold
+    ZoneLabel.TextSize = 9
+    ZoneLabel.TextXAlignment = Enum.TextXAlignment.Center
+    ZoneLabel.Parent = TitleBar
+
+    local AfkBtn = Instance.new("TextButton")
+    AfkBtn.Size = UDim2.new(0, 35, 0, 18)
+    AfkBtn.Position = UDim2.new(0.58, 0, 0.5, -9)
+    AfkBtn.BackgroundColor3 = antiAfkEnabled and Color3.fromRGB(60, 220, 120) or Color3.fromRGB(220, 60, 60)
+    AfkBtn.BackgroundTransparency = 0.2
+    AfkBtn.Text = antiAfkEnabled and "AFK✓" or "AFK"
+    AfkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AfkBtn.Font = Enum.Font.GothamBold
+    AfkBtn.TextSize = 8
+    AfkBtn.BorderSizePixel = 0
+    AfkBtn.Parent = TitleBar
+    Instance.new("UICorner", AfkBtn).CornerRadius = UDim.new(0, 4)
+
+    AfkBtn.MouseButton1Click:Connect(function()
+        toggleAntiAfk(not antiAfkEnabled)
+        if antiAfkEnabled then
+            AfkBtn.Text = "AFK✓"
+            AfkBtn.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+        else
+            AfkBtn.Text = "AFK"
+            AfkBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        end
+    end)
+
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Size = UDim2.new(0, 20, 0, 20)
+    MinBtn.Position = UDim2.new(1, -46, 0.5, -10)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    MinBtn.TextSize = 12
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+    CloseBtn.Position = UDim2.new(1, -23, 0.5, -10)
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseBtn.TextSize = 10
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = TitleBar
+    Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
+
+    local Content = Instance.new("Frame")
+    Content.Size = UDim2.new(1, -10, 1, -34)
+    Content.Position = UDim2.new(0, 5, 0, 30)
+    Content.BackgroundTransparency = 1
+    Content.Parent = Main
+
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 3)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Parent = Content
+
+    -- ROW 1: SELL ALL
+    local SellBtn = Instance.new("TextButton")
+    SellBtn.Size = UDim2.new(1, 0, 0, 26)
+    SellBtn.BackgroundColor3 = Color3.fromRGB(60, 150, 220)
+    SellBtn.BackgroundTransparency = 0.15
+    SellBtn.Text = "💰 Sell All"
+    SellBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SellBtn.Font = Enum.Font.GothamBold
+    SellBtn.TextSize = 10
+    SellBtn.BorderSizePixel = 0
+    SellBtn.Parent = Content
+    Instance.new("UICorner", SellBtn).CornerRadius = UDim.new(0, 5)
+
+    local isSelling = false
+    SellBtn.MouseButton1Click:Connect(function()
+        if isSelling then return end
+        isSelling = true
+        SellBtn.Text = "⏳ Selling..."
+        SellBtn.BackgroundColor3 = Color3.fromRGB(220, 180, 60)
+        
+        local resultData = sellAll()
+        if resultData then
+            if resultData.ok then
+                pcall(function() SellSuccessSFX.TimePosition = 0; SellSuccessSFX:Play() end)
+                local totalStr = CurrencySymbol .. formatNumber(resultData.total or 0)
+                SellBtn.Text = "✅ (" .. totalStr .. ")"
+                SellBtn.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+            elseif resultData.reason == "allfav" then
+                SellBtn.Text = "⚠️ All Fav"
+                SellBtn.BackgroundColor3 = Color3.fromRGB(220, 150, 60)
+            else
+                SellBtn.Text = "✅ Empty"
+                SellBtn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+            end
+        else
+            SellBtn.Text = "❌ Error"
+            SellBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        end
+        
+        task.wait(2)
+        SellBtn.Text = "💰 Sell All"
+        SellBtn.BackgroundColor3 = Color3.fromRGB(60, 150, 220)
+        isSelling = false
+    end)
+
+    -- ROW 2: MAILBOX
+    local MailboxRow = Instance.new("Frame")
+    MailboxRow.Size = UDim2.new(1, 0, 0, 26)
+    MailboxRow.BackgroundTransparency = 1
+    MailboxRow.Parent = Content
+
+    local MailboxBtn = Instance.new("TextButton")
+    MailboxBtn.Size = UDim2.new(1, 0, 1, 0)
+    MailboxBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 190)
+    MailboxBtn.BackgroundTransparency = 0.10
+    MailboxBtn.Text = "📬 Mailbox"
+    MailboxBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MailboxBtn.Font = Enum.Font.GothamBold
+    MailboxBtn.TextSize = 9
+    MailboxBtn.BorderSizePixel = 0
+    MailboxBtn.Parent = MailboxRow
+    Instance.new("UICorner", MailboxBtn).CornerRadius = UDim.new(0, 5)
+
+    MailboxBtn.MouseButton1Click:Connect(function()
+        local opened = openNativeMailbox()
+        if opened then
+            print("[AzothAja] Native Mailbox opened")
+        end
+    end)
+
+    -- ROW 3: DROP EQUIPPED ITEM
+    local DropRow = Instance.new("Frame")
+    DropRow.Size = UDim2.new(1, 0, 0, 26)
+    DropRow.BackgroundTransparency = 1
+    DropRow.Parent = Content
+
+    local DropBtn = Instance.new("TextButton")
+    DropBtn.Size = UDim2.new(1, 0, 1, 0)
+    DropBtn.BackgroundColor3 = Color3.fromRGB(190, 105, 70)
+    DropBtn.BackgroundTransparency = 0.10
+    DropBtn.Text = "📦 Drop: None"
+    DropBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DropBtn.Font = Enum.Font.GothamBold
+    DropBtn.TextSize = 9
+    DropBtn.BorderSizePixel = 0
+    DropBtn.Parent = DropRow
+    Instance.new("UICorner", DropBtn).CornerRadius = UDim.new(0, 5)
+
+    local function updateDropButton()
+        if dropBusy then
+            DropBtn.Text = "📦 Dropping..."
+            DropBtn.BackgroundColor3 = Color3.fromRGB(210, 160, 70)
+            DropBtn.Active = false
+            return
+        end
+
+        if dropEligible(dropSelectedItem) then
+            local displayName = tostring(dropSelectedItem)
+            if #displayName > 27 then
+                displayName = displayName:sub(1, 24) .. "..."
+            end
+            DropBtn.Text = "📦 Drop: " .. displayName
+            DropBtn.BackgroundColor3 = Color3.fromRGB(190, 105, 70)
+            DropBtn.Active = true
+        elseif dropSelectedItem ~= "" then
+            DropBtn.Text = "📦 Drop: Not Allowed"
+            DropBtn.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+            DropBtn.Active = false
+        else
+            DropBtn.Text = "📦 Drop: None"
+            DropBtn.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+            DropBtn.Active = false
+        end
+    end
+
+    DropBtn.MouseButton1Click:Connect(function()
+        if dropBusy then return end
+
+        local ok, reasonOrItem = requestDropEquipped()
+        if ok then
+            DropBtn.Text = "⏳ Dropping " .. tostring(reasonOrItem) .. "..."
+            DropBtn.BackgroundColor3 = Color3.fromRGB(210, 160, 70)
+        else
+            if reasonOrItem == "not_eligible" then
+                DropBtn.Text = "❌ Cannot Drop"
+            elseif reasonOrItem == "remote" then
+                DropBtn.Text = "❌ Remote Missing"
+            else
+                DropBtn.Text = "❌ Drop Failed"
+            end
+            DropBtn.BackgroundColor3 = Color3.fromRGB(200, 65, 65)
+            task.delay(1.2, updateDropButton)
+        end
+    end)
+
+    if HotbarSelectionChanged and HotbarSelectionChanged:IsA("BindableEvent") then
+        HotbarSelectionChanged.Event:Connect(function()
+            updateDropButton()
+        end)
+    end
+
+    if DropRequestResult and DropRequestResult:IsA("RemoteEvent") then
+        DropRequestResult.OnClientEvent:Connect(function()
+            task.defer(updateDropButton)
+        end)
+    end
+
+    updateDropButton()
+
+    -- ROW 4: SEED & BLOCK SHOP
+    local ShopRow1 = Instance.new("Frame")
+    ShopRow1.Size = UDim2.new(1, 0, 0, 24)
+    ShopRow1.BackgroundTransparency = 1
+    ShopRow1.Parent = Content
+    
+    local SeedShopBtn = Instance.new("TextButton")
+    SeedShopBtn.Size = UDim2.new(0.48, 0, 1, 0)
+    SeedShopBtn.BackgroundColor3 = Color3.fromRGB(150, 100, 200)
+    SeedShopBtn.BackgroundTransparency = 0.15
+    SeedShopBtn.Text = "🌱 Seed"
+    SeedShopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SeedShopBtn.Font = Enum.Font.GothamBold
+    SeedShopBtn.TextSize = 9
+    SeedShopBtn.BorderSizePixel = 0
+    SeedShopBtn.Parent = ShopRow1
+    Instance.new("UICorner", SeedShopBtn).CornerRadius = UDim.new(0, 5)
+    SeedShopBtn.MouseButton1Click:Connect(function() createSeedUI() end)
+    
+    local BlockShopBtn = Instance.new("TextButton")
+    BlockShopBtn.Size = UDim2.new(0.48, 0, 1, 0)
+    BlockShopBtn.Position = UDim2.new(0.52, 0, 0, 0)
+    BlockShopBtn.BackgroundColor3 = Color3.fromRGB(220, 100, 200)
+    BlockShopBtn.BackgroundTransparency = 0.15
+    BlockShopBtn.Text = "🧱 Block"
+    BlockShopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    BlockShopBtn.Font = Enum.Font.GothamBold
+    BlockShopBtn.TextSize = 9
+    BlockShopBtn.BorderSizePixel = 0
+    BlockShopBtn.Parent = ShopRow1
+    Instance.new("UICorner", BlockShopBtn).CornerRadius = UDim.new(0, 5)
+    BlockShopBtn.MouseButton1Click:Connect(function() createCrateShopUI() end)
+
+    -- WILD PET DETECTOR
+    -- Mendeteksi pet liar yang berada di Workspace.WildPets.
+    local WildPetRow = Instance.new("Frame")
+    WildPetRow.Size = UDim2.new(1, 0, 0, 20)
+    WildPetRow.BackgroundTransparency = 1
+    WildPetRow.Parent = Content
+
+    local WildPetLabel = Instance.new("TextLabel")
+    WildPetLabel.Size = UDim2.new(1, 0, 1, 0)
+    WildPetLabel.BackgroundTransparency = 1
+    WildPetLabel.Text = "🐾 Wild Pet: Checking..."
+    WildPetLabel.TextColor3 = Color3.fromRGB(180, 180, 190)
+    WildPetLabel.Font = Enum.Font.GothamBold
+    WildPetLabel.TextSize = 8
+    WildPetLabel.TextXAlignment = Enum.TextXAlignment.Left
+    WildPetLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    WildPetLabel.Parent = WildPetRow
+
+    local function getWildPetNames()
+        local folder = Workspace:FindFirstChild("WildPets")
+        if not folder then
+            return {}
+        end
+
+        local pets = {}
+        for _, obj in ipairs(folder:GetChildren()) do
+            if obj:IsA("Model") then
+                local name = obj.Name
+                -- Wild_Rabbit -> Wild Rabbit
+                name = tostring(name):gsub("^Wild[_ ]*", "")
+                name = name:gsub("_", " ")
+                if name == "" then name = obj.Name end
+                table.insert(pets, name)
+            end
+        end
+
+        table.sort(pets)
+        return pets
+    end
+
+    local function updateWildPetLabel()
+        local pets = getWildPetNames()
+
+        if #pets == 0 then
+            WildPetLabel.Text = "🐾 Wild Pet: None"
+            WildPetLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+        elseif #pets == 1 then
+            WildPetLabel.Text = "🐾 Wild Pet: " .. pets[1]
+            WildPetLabel.TextColor3 = Color3.fromRGB(100, 220, 120)
+        else
+            local shown = {}
+            for i = 1, math.min(#pets, 3) do
+                shown[#shown + 1] = pets[i]
+            end
+            local suffix = #pets > 3 and " +" .. (#pets - 3) or ""
+            WildPetLabel.Text = "🐾 Wild Pets: " .. table.concat(shown, ", ") .. suffix
+            WildPetLabel.TextColor3 = Color3.fromRGB(100, 220, 120)
+        end
+    end
+
+    local wildPetsFolder = Workspace:FindFirstChild("WildPets")
+    if wildPetsFolder then
+        wildPetsFolder.ChildAdded:Connect(function()
+            task.defer(updateWildPetLabel)
+        end)
+        wildPetsFolder.ChildRemoved:Connect(function()
+            task.defer(updateWildPetLabel)
+        end)
+    end
+
+    task.spawn(function()
+        while ScreenGui and ScreenGui.Parent do
+            updateWildPetLabel()
+            task.wait(0.5)
+        end
+    end)
+
+    -- ROW 5: PROPS & GEAR SHOP
+    local ShopRow2 = Instance.new("Frame")
+    ShopRow2.Size = UDim2.new(1, 0, 0, 24)
+    ShopRow2.BackgroundTransparency = 1
+    ShopRow2.Parent = Content
+
+    local PropShopBtn = Instance.new("TextButton")
+    PropShopBtn.Size = UDim2.new(0.48, 0, 1, 0)
+    PropShopBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 100)
+    PropShopBtn.BackgroundTransparency = 0.15
+    PropShopBtn.Text = "⛺ Props"
+    PropShopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    PropShopBtn.Font = Enum.Font.GothamBold
+    PropShopBtn.TextSize = 9
+    PropShopBtn.BorderSizePixel = 0
+    PropShopBtn.Parent = ShopRow2
+    Instance.new("UICorner", PropShopBtn).CornerRadius = UDim.new(0, 5)
+    PropShopBtn.MouseButton1Click:Connect(function() createPropShopUI() end)
+    
+    local GearBtn = Instance.new("TextButton")
+    GearBtn.Size = UDim2.new(0.48, 0, 1, 0)
+    GearBtn.Position = UDim2.new(0.52, 0, 0, 0)
+    GearBtn.BackgroundColor3 = Color3.fromRGB(100, 150, 220)
+    GearBtn.BackgroundTransparency = 0.15
+    GearBtn.Text = "🔧 Gear"
+    GearBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    GearBtn.Font = Enum.Font.GothamBold
+    GearBtn.TextSize = 9
+    GearBtn.BorderSizePixel = 0
+    GearBtn.Parent = ShopRow2
+    Instance.new("UICorner", GearBtn).CornerRadius = UDim.new(0, 5)
+    GearBtn.MouseButton1Click:Connect(function() createGearUI() end)
+    
+    -- ROW 6: MARKET & AUCTION
+    local InfoRow = Instance.new("Frame")
+    InfoRow.Size = UDim2.new(1, 0, 0, 24)
+    InfoRow.BackgroundTransparency = 1
+    InfoRow.Parent = Content
+
+    local MarketBtn = Instance.new("TextButton")
+    MarketBtn.Size = UDim2.new(0.48, 0, 1, 0)
+    MarketBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 255)
+    MarketBtn.BackgroundTransparency = 0.15
+    MarketBtn.Text = "📈 Market"
+    MarketBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MarketBtn.Font = Enum.Font.GothamBold
+    MarketBtn.TextSize = 9
+    MarketBtn.BorderSizePixel = 0
+    MarketBtn.Parent = InfoRow
+    Instance.new("UICorner", MarketBtn).CornerRadius = UDim.new(0, 5)
+    MarketBtn.MouseButton1Click:Connect(function() createMarketUI() end)
+    
+    local AuctionBtn = Instance.new("TextButton")
+    AuctionBtn.Size = UDim2.new(0.48, 0, 1, 0)
+    AuctionBtn.Position = UDim2.new(0.52, 0, 0, 0)
+    AuctionBtn.BackgroundColor3 = Color3.fromRGB(220, 180, 60)
+    AuctionBtn.BackgroundTransparency = 0.15
+    AuctionBtn.Text = "⚖️ Auction"
+    AuctionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AuctionBtn.Font = Enum.Font.GothamBold
+    AuctionBtn.TextSize = 9
+    AuctionBtn.BorderSizePixel = 0
+    AuctionBtn.Parent = InfoRow
+    Instance.new("UICorner", AuctionBtn).CornerRadius = UDim.new(0, 5)
+    AuctionBtn.MouseButton1Click:Connect(function() createAuctionUI() end)
+
+    -- ROW 7: TELEPORT SHORTCUTS (Home / Seed / Sell)
+    local TpRow = Instance.new("Frame")
+    TpRow.Size = UDim2.new(1, 0, 0, 24)
+    TpRow.BackgroundTransparency = 1
+    TpRow.Parent = Content
+
+    local function createTpBtn(text, posX, reqType)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0.31, 0, 1, 0)
+        btn.Position = UDim2.new(posX, 0, 0, 0)
+        btn.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+        btn.BackgroundTransparency = 0.2
+        btn.Text = text
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 8
+        btn.BorderSizePixel = 0
+        btn.Parent = TpRow
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+        btn.MouseButton1Click:Connect(function()
+            if TeleportRequest then
+                pcall(function() TeleportRequest:FireServer(reqType) end)
+            end
+        end)
+    end
+    createTpBtn("🏠 Home", 0.0, "HOME")
+    createTpBtn("🌱 Seed", 0.345, "SEED")
+    createTpBtn("💰 Sell", 0.69, "SELL")
+
+    -- ROW 8: ADMIN ABUSE / INTERACTION
+    local AdminRow = Instance.new("Frame")
+    AdminRow.Size = UDim2.new(1, 0, 0, 24)
+    AdminRow.BackgroundTransparency = 1
+    AdminRow.Parent = Content
+
+    local AdminClaimBtn = Instance.new("TextButton")
+    AdminClaimBtn.Size = UDim2.new(0.31, 0, 1, 0)
+    AdminClaimBtn.Position = UDim2.new(0, 0, 0, 0)
+    AdminClaimBtn.BackgroundColor3 = Color3.fromRGB(70, 150, 220)
+    AdminClaimBtn.BackgroundTransparency = 0.15
+    AdminClaimBtn.Text = "🎟 Claim OFF"
+    AdminClaimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AdminClaimBtn.Font = Enum.Font.GothamBold
+    AdminClaimBtn.TextSize = 8
+    AdminClaimBtn.BorderSizePixel = 0
+    AdminClaimBtn.Parent = AdminRow
+    Instance.new("UICorner", AdminClaimBtn).CornerRadius = UDim.new(0, 5)
+
+    local AdminTpBtn = Instance.new("TextButton")
+    AdminTpBtn.Size = UDim2.new(0.31, 0, 1, 0)
+    AdminTpBtn.Position = UDim2.new(0.345, 0, 0, 0)
+    AdminTpBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+    AdminTpBtn.BackgroundTransparency = 0.15
+    AdminTpBtn.Text = "📍 TP OFF"
+    AdminTpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AdminTpBtn.Font = Enum.Font.GothamBold
+    AdminTpBtn.TextSize = 8
+    AdminTpBtn.BorderSizePixel = 0
+    AdminTpBtn.Parent = AdminRow
+    Instance.new("UICorner", AdminTpBtn).CornerRadius = UDim.new(0, 5)
+
+    local InstantBtn = Instance.new("TextButton")
+    InstantBtn.Size = UDim2.new(0.31, 0, 1, 0)
+    InstantBtn.Position = UDim2.new(0.69, 0, 0, 0)
+    InstantBtn.BackgroundColor3 = Color3.fromRGB(150, 90, 190)
+    InstantBtn.BackgroundTransparency = 0.15
+    InstantBtn.Text = "⚡ Instant OFF"
+    InstantBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    InstantBtn.Font = Enum.Font.GothamBold
+    InstantBtn.TextSize = 8
+    InstantBtn.BorderSizePixel = 0
+    InstantBtn.Parent = AdminRow
+    Instance.new("UICorner", InstantBtn).CornerRadius = UDim.new(0, 5)
+
+    AdminClaimBtn.MouseButton1Click:Connect(function()
+        adminAbuseEnabled = not adminAbuseEnabled
+        if toggleAdminAbuse then
+            toggleAdminAbuse(adminAbuseEnabled)
+        end
+
+        if adminAbuseEnabled then
+            AdminClaimBtn.Text = "🎟 Claim ON"
+            AdminClaimBtn.BackgroundColor3 = Color3.fromRGB(60, 200, 110)
+        else
+            AdminClaimBtn.Text = "🎟 Claim OFF"
+            AdminClaimBtn.BackgroundColor3 = Color3.fromRGB(70, 150, 220)
+        end
+    end)
+
+    AdminTpBtn.MouseButton1Click:Connect(function()
+        adminAbuseTeleportEnabled = not adminAbuseTeleportEnabled
+        if toggleAdminAbuseTeleport then
+            toggleAdminAbuseTeleport(adminAbuseTeleportEnabled)
+        end
+
+        if adminAbuseTeleportEnabled then
+            AdminTpBtn.Text = "📍 TP ON"
+            AdminTpBtn.BackgroundColor3 = Color3.fromRGB(60, 200, 110)
+        else
+            AdminTpBtn.Text = "📍 TP OFF"
+            AdminTpBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+        end
+    end)
+
+    InstantBtn.MouseButton1Click:Connect(function()
+        instantInteractEnabled = not instantInteractEnabled
+        setInstantInteract(instantInteractEnabled)
+
+        if instantInteractEnabled then
+            InstantBtn.Text = "⚡ Instant ON"
+            InstantBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 60)
+        else
+            InstantBtn.Text = "⚡ Instant OFF"
+            InstantBtn.BackgroundColor3 = Color3.fromRGB(150, 90, 190)
+        end
+    end)
+
+    -- AUTO BUY STATUS DISPLAYS
+    local SeedDisplay = Instance.new("TextLabel")
+    SeedDisplay.Size = UDim2.new(1, 0, 0, 13)
+    SeedDisplay.BackgroundTransparency = 1
+    SeedDisplay.TextColor3 = Color3.fromRGB(255, 200, 80)
+    SeedDisplay.Font = Enum.Font.GothamMedium
+    SeedDisplay.TextSize = 8
+    SeedDisplay.TextXAlignment = Enum.TextXAlignment.Left
+    SeedDisplay.Parent = Content
+    
+    local GearDisplay = Instance.new("TextLabel")
+    GearDisplay.Size = UDim2.new(1, 0, 0, 13)
+    GearDisplay.BackgroundTransparency = 1
+    GearDisplay.TextColor3 = Color3.fromRGB(100, 150, 220)
+    GearDisplay.Font = Enum.Font.GothamMedium
+    GearDisplay.TextSize = 8
+    GearDisplay.TextXAlignment = Enum.TextXAlignment.Left
+    GearDisplay.Parent = Content
+
+    local BlockDisplay = Instance.new("TextLabel")
+    BlockDisplay.Size = UDim2.new(1, 0, 0, 13)
+    BlockDisplay.BackgroundTransparency = 1
+    BlockDisplay.TextColor3 = Color3.fromRGB(220, 100, 200)
+    BlockDisplay.Font = Enum.Font.GothamMedium
+    BlockDisplay.TextSize = 8
+    BlockDisplay.TextXAlignment = Enum.TextXAlignment.Left
+    BlockDisplay.Parent = Content
+    
+    spawn(function()
+        while ScreenGui and ScreenGui.Parent do
+            SeedDisplay.Text = getSelectedSeedText()
+            GearDisplay.Text = getSelectedGearText()
+            BlockDisplay.Text = getSelectedBlockText()
+            task.wait(0.5)
+        end
+    end)
+
+    -- MINIMIZE LOGIC
+    local minimized = false
+    MinBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            MinBtn.Text = "□"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 230, 0, 26) }):Play()
+            Content.Visible = false
+        else
+            MinBtn.Text = "−"
+            TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quart), { Size = UDim2.new(0, 230, 0, 360) }):Play()
+            task.wait(0.2)
+            Content.Visible = true
+        end
+    end)
+
+    -- CLOSE LOGIC
+    CloseBtn.MouseButton1Click:Connect(function()
+        autoBuySeedEnabled = false
+        autoBuyGearEnabled = false
+        autoBuyBlockEnabled = false
+        adminAbuseEnabled = false
+        adminAbuseTeleportEnabled = false
+        setInstantInteract(false)
+        ScreenGui:Destroy()
+        print("[AzothAja] GUI Closed")
+    end)
+
+    -- DRAG LOGIC
+    local dragging, dragStart, startPos
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = Main.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            Main.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- ================================================
+-- INITIALIZE
+-- ================================================
+
+createGUI()
